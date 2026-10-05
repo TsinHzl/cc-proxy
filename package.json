@@ -1,0 +1,17 @@
+{
+  "name": "cc-proxy",
+  "version": "0.1.0",
+  "description": "Local transparent proxy that renders Claude Code deep thinking as text",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claude-proxy": "./bin/claude-proxy.js",
+    "cc-proxy": "./bin/claude-proxy.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

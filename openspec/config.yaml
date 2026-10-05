@@ -1,0 +1,16 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Tech stack: Node.js >= 18 (ESM), zero runtime deps (node:http / node:https / child_process)
+  Architecture: local transparent proxy for Claude Code. Anthropic Messages API in,
+  forwarded to upstream (ANTHROPIC_BASE_URL or https://api.anthropic.com). SSE responses
+  pass through an event-level thinking→text transformer (ported from agy-cc-proxy).
+  CLI bin `claude-proxy`/`cc-proxy` starts the proxy then spawns `claude` with injected env.
+  Test framework: node:test (`npm test`)
+  Critical invariants:
+    - thinking→text rendering format MUST stay byte-compatible with agy-cc-proxy
+      `src/cloudcode/thinking-text-streamer.js` (header line + `\n> ...` dim lines,
+      blank lines skipped, no trailing newline)
+    - Non-SSE traffic (headers, body, status) must pass through unmodified
+    - SSE events unrelated to thinking blocks must pass through unmodified
