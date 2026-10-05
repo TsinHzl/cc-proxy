@@ -1,3 +1,7 @@
+<p align="center">
+  <b>简体中文</b> | <a href="README.en.md">English</a>
+</p>
+
 # cc-proxy
 
 claude code 本地代理：让直连 Anthropic API / 任意第三方网关的 Claude Code 会话，
