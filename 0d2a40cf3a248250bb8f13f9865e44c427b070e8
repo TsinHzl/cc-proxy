@@ -1,0 +1,25 @@
+package.json
+  15d360604b3b0166 3
+README.md
+  15d360604b3b0166 6,8-32,35-38,42,47-57,59,61,63-72,77,79-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "0d2a40cf3a248250bb8f13f9865e44c427b070e8",
+  "prompts": {
+    "15d360604b3b0166": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70e746e8-d064-4f27-a40c-94ee4ba0b414",
+        "model": "gemini-3.8-flash-tiered"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 69,
+      "total_deletions": 9,
+      "accepted_lines": 69,
+      "overriden_lines": 0
+    }
+  }
+}
