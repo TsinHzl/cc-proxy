@@ -1,0 +1,41 @@
+src/upstream.js
+  15d360604b3b0166 1-63
+openspec/config.yaml
+  15d360604b3b0166 1-16
+src/proxy.js
+  15d360604b3b0166 1-192
+test/thinking-text.test.mjs
+  15d360604b3b0166 1-456
+package.json
+  15d360604b3b0166 1-17
+bin/claude-proxy.js
+  15d360604b3b0166 1-40
+openspec/specs/claude-thinking-text/spec.md
+  15d360604b3b0166 1-87
+openspec/project.md
+  15d360604b3b0166 1-24
+README.md
+  15d360604b3b0166 2-28
+src/thinking-text.js
+  15d360604b3b0166 1-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "adaeda40160e635e021d8933ba049d4e63283f44",
+  "prompts": {
+    "15d360604b3b0166": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70e746e8-d064-4f27-a40c-94ee4ba0b414",
+        "model": "gemini-3.8-flash-tiered"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 1517,
+      "total_deletions": 203,
+      "accepted_lines": 1315,
+      "overriden_lines": 0
+    }
+  }
+}
