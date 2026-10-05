@@ -1,6 +1,6 @@
 {
   "name": "cc-proxy",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Local transparent proxy that renders Claude Code deep thinking as text",
   "type": "module",
   "private": true,
