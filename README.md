@@ -80,18 +80,31 @@ ANTHROPIC_BASE_URL=https://gw.example.com/api cc-proxy
 仅当客户端 UA 匹配 `claude-cli` / `claude-code` 时生效，thinking 块会被改写为：
 
 ```
-> 💭 Thinking
-> 逐行的思考内容（暗色显示）
+💭 Thinking
+逐行的思考内容（暗色显示）
 ```
 
 其他客户端（curl、各语言 SDK 等）流量原样透传，不做任何改写。
 
 多轮对话中，历史消息里已渲染的思考文本会在转发前剥离，避免上下文膨胀。
 
+### 设置：思考滚动窗口（实验特性）
+
+```bash
+cc-proxy --setting
+```
+
+进入交互式设置页（配置持久化到 `~/.cc-proxy/config.json`）：
+
+1. **思考滚动窗口**（默认关闭）— 开启后 thinking 文案最多显示 N 行（默认 10），超出时原地滚动刷新，始终展示最新 N 行；`💭 Thinking` 头行与 `💭 Thought for Ns` 耗时行不占窗口行数
+2. **窗口行数** — 1-100 可调
+
+> ⚠️ **实验特性**：滚动窗口通过 ANSI 光标控制码实现。Claude Code 的 Ink 渲染器对其兼容性未经验证，若出现显示错位/花屏，或终端高度/列数不足导致软换行错位，请关闭该设置。修改设置后需重开 `cc-proxy` 会话生效。
+
 ## 开发
 
 ```bash
-npm test        # node:test 单元 + 端到端测试（24 项）
+npm test        # node:test 单元 + 端到端测试（50 项）
 ```
 
 ## 目录结构

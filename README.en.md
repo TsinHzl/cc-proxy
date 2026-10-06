@@ -86,8 +86,8 @@ Applies only when the client UA matches `claude-cli` / `claude-code`; thinking b
 are rewritten to:
 
 ```
-> 💭 Thinking
-> line-by-line reasoning (dimmed)
+💭 Thinking
+line-by-line reasoning (dimmed)
 ```
 
 Other clients (curl, language SDKs, etc.) pass through untouched.
@@ -95,10 +95,30 @@ Other clients (curl, language SDKs, etc.) pass through untouched.
 In multi-turn conversations, already-rendered thinking text in the message history is
 stripped before forwarding, so the context does not keep growing.
 
+### Settings: thinking rolling window (experimental)
+
+```bash
+cc-proxy --setting
+```
+
+Opens an interactive settings page (persisted to `~/.cc-proxy/config.json`):
+
+1. **Thinking rolling window** (default off) — when enabled, at most N thinking lines
+   are shown (default 10); older lines scroll away in place so the latest N lines are
+   always visible. The `💭 Thinking` header and `💭 Thought for Ns` duration line do
+   not count toward the window
+2. **Window lines** — adjustable from 1 to 100
+
+> ⚠️ **Experimental**: the rolling window is implemented with ANSI cursor control
+> sequences. Compatibility with Claude Code's Ink renderer is unverified; if you see
+> misplaced output / screen corruption, or your terminal height/width causes soft-wrap
+> misalignment, turn the setting off. Config changes take effect in new `cc-proxy`
+> sessions.
+
 ## Development
 
 ```bash
-npm test        # node:test unit + end-to-end tests (24 cases)
+npm test        # node:test unit + end-to-end tests (50 cases)
 ```
 
 ## Layout
