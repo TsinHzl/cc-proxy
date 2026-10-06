@@ -1,0 +1,40 @@
+src/settings.js
+  727a034631d893bc 1-54
+test/settings.test.mjs
+  727a034631d893bc 1-19,21-25,27-33,35-41,43-47,49-55,57-63,65-79
+openspec/changes/settings-thinking-window/tasks.md
+  727a034631d893bc 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "adcd6a6b27051397a6aa04b4f8ce0b8cecac4880",
+  "prompts": {
+    "609d37eeac0a9e4a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0001fc7-a012-4cb1-816b-c15993cd91a0",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 139,
+      "overriden_lines": 0
+    },
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 144,
+      "total_deletions": 11,
+      "accepted_lines": 127,
+      "overriden_lines": 7
+    }
+  }
+}
