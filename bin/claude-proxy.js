@@ -5,13 +5,25 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createProxyServer } from '../src/proxy.js';
+import { readConfig } from '../src/settings.js';
+import { runSettingsCli } from './settings-cli.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_PROXY_BIN || 'claude';
 
 function main() {
+    // --setting: interactive settings page, no proxy/claude started.
+    if (process.argv.includes('--setting')) {
+        runSettingsCli().then(() => process.exit(0));
+        return;
+    }
+
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
-    const server = createProxyServer({ baseUrlEnv: originalBase });
+    // Window size read once at startup; config edits take effect in new sessions.
+    const config = readConfig(process.env.CC_PROXY_CONFIG_DIR);
+    const windowLines = config.thinkingWindow?.enabled ? config.thinkingWindow.lines : 0;
+
+    const server = createProxyServer({ baseUrlEnv: originalBase, windowLines });
 
     server.listen(0, '127.0.0.1', () => {
         const { port } = server.address();
