@@ -132,7 +132,7 @@ test('streaming: lazy content_block_start with header, no signature events', asy
     const start = out[1];
     assert.deepEqual(start.content_block, { type: 'text', text: '' });
     const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
-    assert.equal(texts.join(''), `${HEADER}\n${ANSI_DIM}hello${ANSI_RESET}\n${ANSI_DIM}world${ANSI_RESET}\n${ANSI_DIM}⏱️ Thought for 1s${ANSI_RESET}`);
+    assert.equal(texts.join(''), `${HEADER}\n${ANSI_DIM}hello${ANSI_RESET}\n${ANSI_DIM}world${ANSI_RESET}\n${ANSI_DIM}💭 Thought for 1s${ANSI_RESET}`);
 });
 
 test('streaming: whitespace-only thinking block emits nothing (no orphan events)', async () => {

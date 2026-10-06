@@ -56,11 +56,11 @@ export function formatThinkingAsText(thinking) {
 }
 
 // Duration summary appended as the final line when a thinking block stops, e.g.
-// `⏱️ Thought for 12s` (or `1m 5s` for ≥ 60s).
+// `💭 Thought for 12s` (or `1m 5s` for ≥ 60s).
 export function formatDurationLine(seconds) {
     const total = Math.max(1, Math.round(seconds));
     const label = total >= 60 ? `${Math.floor(total / 60)}m ${total % 60}s` : `${total}s`;
-    return `${ANSI_DIM}⏱️ Thought for ${label}${ANSI_RESET}`;
+    return `${ANSI_DIM}💭 Thought for ${label}${ANSI_RESET}`;
 }
 
 export function stripThinkingTextHistory(messages) {
