@@ -8,6 +8,8 @@ A local transparent proxy for Claude Code: it lets sessions that talk directly t
 the Anthropic API or any third-party gateway display deep-thinking output as
 `> 💭 Thinking` dim blockquotes, streamed line by line (ported from agy-cc-proxy).
 
+![Thinking rendering effect](docs/screenshot-thinking.png)
+
 ## Installation
 
 Requirements:

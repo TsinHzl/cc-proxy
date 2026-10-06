@@ -7,6 +7,8 @@
 claude code 本地代理：让直连 Anthropic API / 任意第三方网关的 Claude Code 会话，
 也能展示深度思考文案（`> 💭 Thinking` 灰色引文流式渲染，移植自 agy-cc-proxy）。
 
+![Thinking 渲染效果](docs/screenshot-thinking.png)
+
 ## 安装
 
 前置要求：
