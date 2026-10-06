@@ -5,7 +5,6 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createProxyServer } from '../src/proxy.js';
-import { readConfig } from '../src/settings.js';
 import { logger } from '../src/logger.js';
 import { runSettingsCli } from './settings-cli.js';
 
@@ -31,11 +30,7 @@ function main() {
 
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
-    // Window size read once at startup; config edits take effect in new sessions.
-    const config = readConfig(process.env.CC_PROXY_CONFIG_DIR);
-    const windowLines = config.thinkingWindow?.enabled ? config.thinkingWindow.lines : 0;
-
-    const server = createProxyServer({ baseUrlEnv: originalBase, windowLines });
+    const server = createProxyServer({ baseUrlEnv: originalBase });
 
     server.listen(0, '127.0.0.1', () => {
         const { port } = server.address();

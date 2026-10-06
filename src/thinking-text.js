@@ -12,13 +12,8 @@ const ANSI_RESET = '\x1b[0m';
 const THINKING_TEXT_HEADER_LINE = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const THINKING_TEXT_LINE_RE = `\\n${escapeRegExp(ANSI_DIM)}[^\\n]*?${escapeRegExp(ANSI_RESET)}`;
-// Rolling-window mode rewrites the whole window in one delta: the cursor
-// control sequence leads (up N-1 lines, carriage return to column 0, erase)
-// and the first rewritten line has no leading '\n'.
-const THINKING_WINDOW_CURSOR_RE = '\\x1b\\[\\d*A\\r?\\x1b\\[J';
-const THINKING_WINDOW_LINE_RE = `${escapeRegExp(ANSI_DIM)}[^\\n]*?${escapeRegExp(ANSI_RESET)}`;
 const THINKING_TEXT_BLOCK_RE = new RegExp(
-    `${escapeRegExp(THINKING_TEXT_HEADER_LINE)}(?:${THINKING_TEXT_LINE_RE}|${THINKING_WINDOW_LINE_RE}|${THINKING_WINDOW_CURSOR_RE})*`,
+    `${escapeRegExp(THINKING_TEXT_HEADER_LINE)}(?:${THINKING_TEXT_LINE_RE})*`,
     'g'
 );
 // Legacy marker-prefixed format (whole-block dim + invisible marker) kept so
@@ -144,33 +139,12 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     let responseThinkingBytes = 0;
     let responseLimitExceeded = false;
     let blockStartedAtMs = null;
-    // Rolling window size (0/undefined = off): max visible thinking lines,
-    // excluding the header and duration lines.
-    const windowLines = Number.isInteger(options.windowLines) && options.windowLines > 0
-        ? options.windowLines
-        : 0;
 
     const textDeltaEvent = (index, text) => ({
         type: 'content_block_delta',
         index,
         delta: { type: 'text_delta', text }
     });
-
-    // Window overflow: emit a cursor-up + erase sequence, then rewrite the
-    // whole window in a single delta. After streaming, the cursor sits at the
-    // END of the last line (not its start), so the sequence first moves up
-    // N-1 lines to reach the first window line, then '\r' returns to column
-    // 0 before ESC[J erases from the cursor to end of screen. The first
-    // rewritten line therefore has no leading '\n'; the rest are '\n'-led so
-    // the block never gains extra lines on screen.
-    const rewriteWindow = function* (block, incomingLine) {
-        const lines = [...block.emittedLines.slice(1), incomingLine];
-        block.emittedLines = lines;
-        yield textDeltaEvent(
-            block.index,
-            `\x1b[${windowLines - 1}A\r\x1b[J${lines.map((l) => `${ANSI_DIM}${l}${ANSI_RESET}`).join(`\n`)}`
-        );
-    };
 
     // Emit buffered complete lines as they arrive so the thinking text streams
     // out incrementally instead of appearing all at once at content_block_stop.
@@ -196,19 +170,10 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                 block.firstChunk = false;
                 yield textDeltaEvent(block.index, THINKING_TEXT_HEADER_LINE);
             }
-            if (windowLines && block.windowActive) {
-                yield* rewriteWindow(block, line);
-                continue;
-            }
             // Newline leads the next line instead of trailing the previous one,
             // so the block never ends with '\n' (an extra empty blockquote line
             // rendering as a stray segment of the left quote bar) — kiro style.
             yield textDeltaEvent(block.index, `\n${ANSI_DIM}${line}${ANSI_RESET}`);
-            if (windowLines) {
-                if (!block.emittedLines) block.emittedLines = [];
-                block.emittedLines.push(line);
-                if (block.emittedLines.length === windowLines) block.windowActive = true;
-            }
         }
     };
 
@@ -261,15 +226,8 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                     const lastLine = pendingBlock.pending.replace(/\r$/, '').trim();
                     let tail = '';
                     if (lastLine) {
-                        if (windowLines && pendingBlock.windowActive) {
-                            // Window full: the tail line joins the window via a
-                            // rewrite; header (already on screen) is untouched.
-                            yield* rewriteWindow(pendingBlock, lastLine);
-                            pendingBlock.pending = '';
-                        } else {
-                            tail = `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n${ANSI_DIM}${lastLine}${ANSI_RESET}`;
-                            pendingBlock.pending = '';
-                        }
+                        tail = `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n${ANSI_DIM}${lastLine}${ANSI_RESET}`;
+                        pendingBlock.pending = '';
                     }
                     if (tail && elapsedLine) tail += `\n${elapsedLine}`;
                     // Whitespace-only block with nothing emitted: skip the
@@ -317,8 +275,6 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                 firstChunk: true,
                 started: false,
                 bytes: 0,
-                emittedLines: [],
-                windowActive: false,
                 discarded: responseLimitExceeded
             };
             if (responseLimitExceeded) {

@@ -109,7 +109,7 @@ function createEventIterator(upstreamRes) {
     };
 }
 
-export function createProxyServer({ baseUrlEnv, windowLines } = {}) {
+export function createProxyServer({ baseUrlEnv } = {}) {
     return http.createServer((req, res) => {
         const chunks = [];
         req.on('data', (c) => chunks.push(c));
@@ -170,7 +170,7 @@ export function createProxyServer({ baseUrlEnv, windowLines } = {}) {
                 const events = createEventIterator(upstreamRes);
                 void (async () => {
                     try {
-                        for await (const event of transformThinkingAsTextEvents(events, { thinkingAsText: true, windowLines })) {
+                        for await (const event of transformThinkingAsTextEvents(events, { thinkingAsText: true })) {
                             await writeEvent(res, event);
                         }
                         res.end();
