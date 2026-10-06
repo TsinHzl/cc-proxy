@@ -56,11 +56,11 @@ export function formatThinkingAsText(thinking) {
 }
 
 // Duration summary appended as the final line when a thinking block stops, e.g.
-// `💭 Thought for 12s` (or `1m 5s` for ≥ 60s).
+// `💭 Thought for 12s` (always whole seconds with a 1s floor, matching
+// agy-cc-proxy thinking-text-streamer.js).
 export function formatDurationLine(seconds) {
     const total = Math.max(1, Math.round(seconds));
-    const label = total >= 60 ? `${Math.floor(total / 60)}m ${total % 60}s` : `${total}s`;
-    return `${ANSI_DIM}💭 Thought for ${label}${ANSI_RESET}`;
+    return `${ANSI_DIM}💭 Thought for ${total}s${ANSI_RESET}`;
 }
 
 export function stripThinkingTextHistory(messages) {
@@ -222,7 +222,8 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                     let tail = lastLine
                         ? `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n${ANSI_DIM}${lastLine}${ANSI_RESET}`
                         : '';
-                    if (tail && elapsedLine) tail += `\n${elapsedLine}`;                    // Whitespace-only block with nothing emitted: skip the
+                    if (tail && elapsedLine) tail += `\n${elapsedLine}`;
+                    // Whitespace-only block with nothing emitted: skip the
                     // stop event too, so the client never sees an orphan
                     // content_block_stop without its content_block_start.
                     if (pendingBlock.started || tail) {
@@ -238,9 +239,11 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                         if (tail) {
                             yield textDeltaEvent(pendingBlock.index, tail);
                         } else if (elapsedLine && pendingBlock.started) {
-                            // Fully flushed block (pending empty at stop): no tail
-                            // text left, so the duration line stands alone.
-                            yield textDeltaEvent(pendingBlock.index, elapsedLine);
+                            // Fully flushed block (pending empty at stop): no
+                            // tail text left; newline still leads so the
+                            // duration line starts fresh (byte-compatible with
+                            // agy-cc-proxy).
+                            yield textDeltaEvent(pendingBlock.index, `\n${elapsedLine}`);
                         }
                         yield event;
                     }
