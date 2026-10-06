@@ -28,6 +28,19 @@ Verify:
 cc-proxy --version    # prints the Claude Code version, e.g. 2.1.231 (Claude Code)
 ```
 
+Updating:
+
+Installation is via `npm link` (symlinked to this repo directory), so updates
+take effect right after pulling the code — no re-registration needed:
+
+```bash
+cd cc-proxy
+git pull          # pull the latest code, effective immediately
+```
+
+> If an upstream release changes the package structure, run `npm link` once more
+> afterward as a safety net.
+
 Uninstall:
 
 ```bash

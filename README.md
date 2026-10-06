@@ -27,6 +27,17 @@ npm link          # 把 claude-proxy / cc-proxy 两个命令注册到全局 PATH
 cc-proxy --version    # 输出 Claude Code 版本号（如 2.1.231 (Claude Code)）即安装成功
 ```
 
+更新：
+
+安装方式为 `npm link`（软链到本仓库目录），更新代码后无需重新注册：
+
+```bash
+cd cc-proxy
+git pull          # 拉取最新代码，立即生效
+```
+
+> 若上游发布的版本有结构变化，拉取后可再执行一次 `npm link` 兜底。
+
 卸载：
 
 ```bash
