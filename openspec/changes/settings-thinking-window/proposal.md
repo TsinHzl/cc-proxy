@@ -19,10 +19,10 @@ cc-proxy 目前的 thinking 文案逐行无限下滚，长思考会刷屏。需�
 - 其他设置项（当前仅 thinking window 一项，结构上可扩展）
 
 ## Spec 说明
-本变更引入新的用户可见行为（`--setting` CLI、配置 schema、滚动窗口渲染格式），已创建 delta spec：`openspec/changes/settings-thinking-window/specs/cc-proxy-settings/spec.md`，覆盖配置项与默认值、容错回退、`--setting` 交互行为、窗口渲染格式（含发射布局定义）、历史剥离行为。
+本变更引入新的用户可见行为（`--setting` CLI、配置 schema、滚动窗口渲染格式），将创建 delta spec：`openspec/changes/settings-thinking-window/specs/cc-proxy-settings/spec.md`（落地任务见 tasks.md 任务 0），覆盖配置项与默认值、容错回退、`--setting` 交互行为、窗口渲染格式（含发射布局定义）、历史剥离行为。
 
 ## 技术方案
-- 新增 `src/settings.js`：readConfig/writeConfig（默认 `{ thinkingWindow: { enabled: false, lines: 10 } }`，损坏回退默认），行数校验 1-100 整数
+- 新增 `src/settings.js`：readConfig/writeConfig（默认 `{ thinkingWindow: { enabled: false, lines: 10 } }`，损坏回退默认），行数校验 1-100 整数；**路径可注入**（默认 `~/.cc-proxy/config.json`，测试传临时目录，避免读写真实配置）
 - 新增 `bin/settings-cli.js`：交互式菜单，菜单逻辑抽为可注入 stdin/stdout 的纯函数（node:test 可测），CLI 壳仅做装配
 - `transformThinkingAsTextEvents` options 增加 `windowLines`（0/undefined=关闭）
 - **窗口发射布局（实现/测试/剥离正则三方对齐的唯一事实）**：
@@ -30,13 +30,13 @@ cc-proxy 目前的 thinking 文案逐行无限下滚，长思考会刷屏。需�
   - 窗口已满、新行到达：单个 delta = `ESC[NA ESC[J` + 整窗重写（`<dim>L1<reset>` 首行无 `\n` 前导——光标已在行首；其余行 `\n<dim>Li<reset>`）
   - stop 路径：tail 半行与耗时行同样应用窗口逻辑；耗时行恒为 `\n<dim>💭 Thought for Ns<reset>` 追加在窗口下方，不占窗口行数
   - `emittedLines` 队列按 thinking 块重置（多个块互不影响）
-- 历史剥离：`THINKING_TEXT_BLOCK_RE` 扩展为三交替分支（`\n<dim>line<reset>` | 无前导 `<dim>line<reset>` | `\x1b[\d*A\x1b[J`），已实测覆盖独立行/内联/多次滚动/耗时行/混合文本场景
+- 历史剥离：`THINKING_TEXT_BLOCK_RE` 扩展为三交替分支（`\n<dim>line<reset>` | 无前导 `<dim>line<reset>` | `\x1b[\d*A\x1b[J`）；该正则形态已在本仓 node 环境对样例文本验证可完整清除（独立行/内联/多次滚动/耗时行/混合文本），实现后由任务 3 单测固化
 - 字节上限：控制码每行约 8B，远低于 256KB/1MiB 上限，无需调整
 - **字节兼容不变量范围声明**：窗口关闭（默认）时渲染字节兼容 agy-cc-proxy；窗口开启为本仓扩展特性，不要求字节兼容（config.yaml 不变量描述将随归档更新）
 
 ## 预期影响
 - 对现有行为零影响：窗口默认关闭，`windowLines` 为 0 时所有新分支短路，25 项现有测试不变
-- 开启后：长思考不再刷屏，但历史消息中控制码依赖扩展剥离正则清除（已验证）
+- 开启后：长思考不再刷屏，但历史消息中控制码依赖扩展剥离正则清除（实现后由任务 3 单测验证）
 - 实验风险：CC 的 Ink 渲染器对 SSE 文本流中 ANSI 光标控制码的渲染未经验证，可能错位/花屏；失败时关闭设置即可回退
 
 ## 风险
