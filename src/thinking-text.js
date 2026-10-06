@@ -55,6 +55,14 @@ export function formatThinkingAsText(thinking) {
     return `${THINKING_TEXT_HEADER_LINE}\n${quotedThinking}`;
 }
 
+// Duration summary appended as the final line when a thinking block stops, e.g.
+// `⏱️ Thought for 12s` (or `1m 5s` for ≥ 60s).
+export function formatDurationLine(seconds) {
+    const total = Math.max(1, Math.round(seconds));
+    const label = total >= 60 ? `${Math.floor(total / 60)}m ${total % 60}s` : `${total}s`;
+    return `${ANSI_DIM}⏱️ Thought for ${label}${ANSI_RESET}`;
+}
+
 export function stripThinkingTextHistory(messages) {
     if (!Array.isArray(messages)) return messages;
 
@@ -125,6 +133,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     let pendingBlock = null;
     let responseThinkingBytes = 0;
     let responseLimitExceeded = false;
+    let blockStartedAtMs = null;
 
     const textDeltaEvent = (index, text) => ({
         type: 'content_block_delta',
@@ -201,15 +210,19 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
             }
 
             if (isMatchingStop(event, pendingBlock.index)) {
+                const elapsedLine = blockStartedAtMs === null
+                    ? null
+                    : formatDurationLine((Date.now() - blockStartedAtMs) / 1000);
+                blockStartedAtMs = null;
                 if (!pendingBlock.discarded && pendingBlock.thinking) {
                     // Newline leads, never trails; blank lines are skipped so
                     // the block ends right after ANSI_RESET with no extra
                     // empty quote line.
                     const lastLine = pendingBlock.pending.replace(/\r$/, '').trim();
-                    const tail = lastLine
+                    let tail = lastLine
                         ? `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n${ANSI_DIM}${lastLine}${ANSI_RESET}`
                         : '';
-                    // Whitespace-only block with nothing emitted: skip the
+                    if (tail && elapsedLine) tail += `\n${elapsedLine}`;                    // Whitespace-only block with nothing emitted: skip the
                     // stop event too, so the client never sees an orphan
                     // content_block_stop without its content_block_start.
                     if (pendingBlock.started || tail) {
@@ -222,7 +235,13 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                             };
                             pendingBlock.started = true;
                         }
-                        if (tail) yield textDeltaEvent(pendingBlock.index, tail);
+                        if (tail) {
+                            yield textDeltaEvent(pendingBlock.index, tail);
+                        } else if (elapsedLine && pendingBlock.started) {
+                            // Fully flushed block (pending empty at stop): no tail
+                            // text left, so the duration line stands alone.
+                            yield textDeltaEvent(pendingBlock.index, elapsedLine);
+                        }
                         yield event;
                     }
                 } else if (pendingBlock.started) {
@@ -238,6 +257,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         }
 
         if (isThinkingStart(event)) {
+            blockStartedAtMs = Date.now();
             pendingBlock = {
                 index: event.index,
                 thinking: '',
