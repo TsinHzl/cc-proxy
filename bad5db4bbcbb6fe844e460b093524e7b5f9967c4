@@ -1,0 +1,23 @@
+docs/blog-cc-proxy.md
+  727a034631d893bc 1-111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "bad5db4bbcbb6fe844e460b093524e7b5f9967c4",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 114,
+      "total_deletions": 3,
+      "accepted_lines": 111,
+      "overriden_lines": 0
+    }
+  }
+}
