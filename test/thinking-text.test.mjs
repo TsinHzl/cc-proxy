@@ -14,7 +14,7 @@ import { resolveUpstream } from '../src/upstream.js';
 
 const ANSI_DIM = '\x1b[2m';
 const ANSI_RESET = '\x1b[0m';
-const HEADER = `> ${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
+const HEADER = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
 
 function ev(type, extra = {}) { return { type, ...extra }; }
 
@@ -30,12 +30,12 @@ async function* fromArray(arr) { yield* arr; }
 
 test('formatThinkingAsText: header + dim per-line, no trailing newline', () => {
     const out = formatThinkingAsText('line one\nline two');
-    assert.equal(out, `${HEADER}\n> ${ANSI_DIM}line one${ANSI_RESET}\n> ${ANSI_DIM}line two${ANSI_RESET}`);
+    assert.equal(out, `${HEADER}\n${ANSI_DIM}line one${ANSI_RESET}\n${ANSI_DIM}line two${ANSI_RESET}`);
 });
 
 test('formatThinkingAsText: blank lines skipped, lines trimmed, CRLF normalized', () => {
     const out = formatThinkingAsText('  a  \r\n\r\n\nb\r\n');
-    assert.equal(out, `${HEADER}\n> ${ANSI_DIM}a${ANSI_RESET}\n> ${ANSI_DIM}b${ANSI_RESET}`);
+    assert.equal(out, `${HEADER}\n${ANSI_DIM}a${ANSI_RESET}\n${ANSI_DIM}b${ANSI_RESET}`);
 });
 
 test('formatThinkingAsText: whitespace-only yields bare header, empty/null yield null', () => {
@@ -124,15 +124,15 @@ test('streaming: lazy content_block_start with header, no signature events', asy
         'message_start',
         'content_block_start',   // lazy: emitted with first line
         'content_block_delta',   // header
-        'content_block_delta',   // \n> hello
-        'content_block_delta',   // \n> world
+        'content_block_delta',   // \n dim hello
+        'content_block_delta',   // \n dim world
         'content_block_stop',
         'message_stop'
     ]);
     const start = out[1];
     assert.deepEqual(start.content_block, { type: 'text', text: '' });
     const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
-    assert.equal(texts.join(''), `${HEADER}\n> ${ANSI_DIM}hello${ANSI_RESET}\n> ${ANSI_DIM}world${ANSI_RESET}`);
+    assert.equal(texts.join(''), `${HEADER}\n${ANSI_DIM}hello${ANSI_RESET}\n${ANSI_DIM}world${ANSI_RESET}`);
 });
 
 test('streaming: whitespace-only thinking block emits nothing (no orphan events)', async () => {
@@ -197,7 +197,7 @@ test('UA gate: claude-cli / claude-code match, others do not', () => {
 // ---------- 历史剥离 ----------
 
 test('stripThinkingTextHistory: removes rendered thinking blocks from text blocks', () => {
-    const rendered = `${HEADER}\n> ${ANSI_DIM}thought line${ANSI_RESET}`;
+    const rendered = `${HEADER}\n${ANSI_DIM}thought line${ANSI_RESET}`;
     const messages = [
         { role: 'user', content: [{ type: 'text', text: rendered }] }, // user untouched
         {
@@ -228,6 +228,19 @@ test('stripThinkingTextHistory: string content stripped, legacy marker variant s
     assert.ok(!out[0].content.includes('agy-thinking-text-v1'));
     assert.ok(out[0].content.startsWith('a\n'));
     assert.ok(out[0].content.endsWith('c'));
+});
+
+test('stripThinkingTextHistory: previous quoted (`> ` prefix) format stripped', () => {
+    const QUOTED_HEADER = `> ${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
+    const messages = [{
+        role: 'assistant',
+        content: `a\n${QUOTED_HEADER}\n> ${ANSI_DIM}quoted thought${ANSI_RESET}\nb`
+    }];
+    const out = stripThinkingTextHistory(messages);
+    assert.ok(!out[0].content.includes('💭'));
+    assert.ok(!out[0].content.includes('quoted thought'));
+    assert.ok(out[0].content.startsWith('a\n'));
+    assert.ok(out[0].content.endsWith('\nb'));
 });
 
 test('stripThinkingTextHistory: non-array / non-assistant passthrough', () => {
@@ -306,7 +319,7 @@ test('proxy e2e: rewrites thinking to text for CC UA, splits across chunks', asy
         const raw = await res.text();
         assert.ok(!raw.includes('signature_delta'), 'signature events stripped');
         assert.ok(raw.includes('💭 Thinking'), 'rendered header present');
-        assert.ok(raw.includes(`\\n> \\u001b[2mdeep thought\\u001b[0m`), 'dim line rendering present');
+        assert.ok(raw.includes(`\\n\\u001b[2mdeep thought\\u001b[0m`), 'dim line rendering present');
         assert.ok(raw.includes('second line'));
 
         // Non-CC client gets verbatim passthrough.
@@ -340,7 +353,7 @@ test('proxy e2e: request-side history strip applied for CC UA', async () => {
     await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
 
     try {
-        const rendered = `${HEADER}\n> ${ANSI_DIM}old${ANSI_RESET}`;
+        const rendered = `${HEADER}\n${ANSI_DIM}old${ANSI_RESET}`;
         await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
             method: 'POST',
             headers: { 'user-agent': 'claude-code/2.0', 'content-type': 'application/json' },

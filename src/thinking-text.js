@@ -4,11 +4,12 @@ export const MAX_THINKING_TEXT_RESPONSE_BYTES = 1024 * 1024;
 
 const ANSI_DIM = '\x1b[2m';
 const ANSI_RESET = '\x1b[0m';
-// Style matches kiro2cc-proxy thinking_text.rs: dim wraps each line
-// individually and resets before every newline so styling never spans lines.
-const THINKING_TEXT_HEADER_LINE = `> ${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
+// Style: dim wraps each line individually and resets before every newline so
+// styling never spans lines. No `> ` prefix: a dim plain line avoids the
+// blockquote bar Claude Code renders for quoted lines.
+const THINKING_TEXT_HEADER_LINE = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const THINKING_TEXT_LINE_RE = `\\n> [^\\n]*?${escapeRegExp(ANSI_RESET)}`;
+const THINKING_TEXT_LINE_RE = `\\n${escapeRegExp(ANSI_DIM)}[^\\n]*?${escapeRegExp(ANSI_RESET)}`;
 const THINKING_TEXT_BLOCK_RE = new RegExp(
     `${escapeRegExp(THINKING_TEXT_HEADER_LINE)}(?:${THINKING_TEXT_LINE_RE})*`,
     'g'
@@ -18,6 +19,13 @@ const THINKING_TEXT_BLOCK_RE = new RegExp(
 const LEGACY_THINKING_TEXT_PREFIX = `${ANSI_DIM}> 💭 Thinking⁣agy-thinking-text-v1⁣`;
 const LEGACY_THINKING_TEXT_BLOCK_RE = new RegExp(
     `${escapeRegExp(LEGACY_THINKING_TEXT_PREFIX)}\\n?(?:> [^\\r\\n]*(?:\\r?\\n|(?=${escapeRegExp(ANSI_RESET)})))*${escapeRegExp(ANSI_RESET)}`,
+    'g'
+);
+// Previous blockquote format (`> ` prefix per line, no marker) so history
+// rendered before the bar-less style is still stripped from conversations.
+const QUOTED_THINKING_TEXT_HEADER_LINE = `> ${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
+const QUOTED_THINKING_TEXT_BLOCK_RE = new RegExp(
+    `${escapeRegExp(QUOTED_THINKING_TEXT_HEADER_LINE)}(?:\\n> [^\\n]*?${escapeRegExp(ANSI_RESET)})*`,
     'g'
 );
 
@@ -39,7 +47,7 @@ export function formatThinkingAsText(thinking) {
         .split('\n')
         .map((line) => line.trim())
         .filter((line) => line)
-        .map((line) => `> ${ANSI_DIM}${line}${ANSI_RESET}`)
+        .map((line) => `${ANSI_DIM}${line}${ANSI_RESET}`)
         .join('\n');
     // No trailing newline: a block-ending '\n' makes Claude Code render one
     // blockquote line more than the text (matches kiro2cc-proxy thinking_text.rs).
@@ -57,6 +65,9 @@ export function stripThinkingTextHistory(messages) {
             return {
                 ...message,
                 content: message.content
+                    // Quoted format first: the bare-format regex would otherwise
+                    // match the dim header inside a quoted block and break it up.
+                    .replace(QUOTED_THINKING_TEXT_BLOCK_RE, '')
                     .replace(THINKING_TEXT_BLOCK_RE, '')
                     .replace(LEGACY_THINKING_TEXT_BLOCK_RE, '')
             };
@@ -67,6 +78,8 @@ export function stripThinkingTextHistory(messages) {
         const content = message.content.flatMap((block) => {
             if (block?.type !== 'text' || typeof block.text !== 'string') return [block];
             const text = block.text
+                // Quoted format first: see strip order note above.
+                .replace(QUOTED_THINKING_TEXT_BLOCK_RE, '')
                 .replace(THINKING_TEXT_BLOCK_RE, '')
                 .replace(LEGACY_THINKING_TEXT_BLOCK_RE, '');
             return text ? [{ ...block, text }] : [];
@@ -146,7 +159,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
             // Newline leads the next line instead of trailing the previous one,
             // so the block never ends with '\n' (an extra empty blockquote line
             // rendering as a stray segment of the left quote bar) — kiro style.
-            yield textDeltaEvent(block.index, `\n> ${ANSI_DIM}${line}${ANSI_RESET}`);
+            yield textDeltaEvent(block.index, `\n${ANSI_DIM}${line}${ANSI_RESET}`);
         }
     };
 
@@ -194,7 +207,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                     // empty quote line.
                     const lastLine = pendingBlock.pending.replace(/\r$/, '').trim();
                     const tail = lastLine
-                        ? `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n> ${ANSI_DIM}${lastLine}${ANSI_RESET}`
+                        ? `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n${ANSI_DIM}${lastLine}${ANSI_RESET}`
                         : '';
                     // Whitespace-only block with nothing emitted: skip the
                     // stop event too, so the client never sees an orphan
