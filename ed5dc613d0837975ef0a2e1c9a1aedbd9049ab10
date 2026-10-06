@@ -1,0 +1,36 @@
+openspec/changes/settings-thinking-window/tasks.md
+  727a034631d893bc 6,9,11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "ed5dc613d0837975ef0a2e1c9a1aedbd9049ab10",
+  "prompts": {
+    "609d37eeac0a9e4a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d0001fc7-a012-4cb1-816b-c15993cd91a0",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 139,
+      "overriden_lines": 0
+    },
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 4,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
