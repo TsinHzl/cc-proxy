@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { resolveUpstream, forwardRequest } from './upstream.js';
+import { logger } from './logger.js';
 import {
     isClaudeCodeUserAgent,
     formatThinkingAsText,
@@ -98,7 +99,7 @@ function createEventIterator(upstreamRes) {
                 // handed downstream: serializeEvent would throw on them and
                 // kill the rest of the stream.
                 if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
-                    console.error('[cc-proxy] skipping unparsable SSE event');
+                    logger.warn('[cc-proxy] skipping unparsable SSE event');
                     continue;
                 }
                 return { value: event, done: false };
@@ -174,12 +175,12 @@ export function createProxyServer({ baseUrlEnv, windowLines } = {}) {
                         }
                         res.end();
                     } catch (err) {
-                        console.error('[cc-proxy] stream transform failed:', err.message);
+                        logger.error('[cc-proxy] stream transform failed:', err.message);
                         res.end();
                     }
                 })();
             }, (err) => {
-                console.error('[cc-proxy] upstream error:', err.message);
+                logger.error('[cc-proxy] upstream error:', err.message);
                 if (res.headersSent) { res.end(); return; }
                 res.writeHead(502, { 'content-type': 'application/json' });
                 res.end(JSON.stringify({

@@ -38,7 +38,7 @@ The system SHALL 在 CLI 收到 `--setting` 参数时进入交互式设置菜单
 - **THEN** thinkingWindow.lines 更新并写回 config.json；输入非法时提示重输
 
 ### Requirement: 思考滚动窗口渲染
-The system SHALL 提供 thinkingWindow（默认关闭）设置项；开启后 thinking 文案渲染采用滚动窗口：前 N 行（N=thinkingWindow.lines，不含 `💭 Thinking` 头行与 `💭 Thought for Ns` 耗时行）逐行正常流式，第 N+1 行起每条新行 delta 以 `ESC[NA ESC[J` 光标控制码开头并整窗重写最近 N 行（首条重写行无 `\n` 前导，其余行 `\n<dim>text<reset>`）。关闭时渲染格式 SHALL 与现状字节一致（兼容 agy-cc-proxy）。
+The system SHALL 提供 thinkingWindow（默认关闭）设置项；开启后 thinking 文案渲染采用滚动窗口：前 N 行（N=thinkingWindow.lines，不含 `💭 Thinking` 头行与 `💭 Thought for Ns` 耗时行）逐行正常流式，第 N+1 行起每条新行 delta 以 `ESC[(N-1)A CR ESC[J` 光标控制码开头（流式后光标停在上一行行尾，先上移 N-1 行回到窗口首行、回车回到列 0，再擦除至屏幕末尾）并整窗重写最近 N 行（首条重写行无 `\n` 前导，其余行 `\n<dim>text<reset>`）。关闭时渲染格式 SHALL 与现状字节一致（兼容 agy-cc-proxy）。
 
 #### Scenario: 窗口未满正常流式
 - **GIVEN** thinkingWindow 开启且 lines=3
@@ -48,7 +48,7 @@ The system SHALL 提供 thinkingWindow（默认关闭）设置项；开启后 th
 #### Scenario: 窗口满后整窗重写
 - **GIVEN** thinkingWindow 开启且 lines=3，已有 3 行流出
 - **WHEN** 第 4 行到达
-- **THEN** 发出单个 delta：`ESC[3A ESC[J` + 重写最近 3 行（首行无 `\n` 前导），终端窗口内始终为最近 3 行
+- **THEN** 发出单个 delta：`ESC[2A CR ESC[J` + 重写最近 3 行（首行无 `\n` 前导），终端窗口内始终为最近 3 行
 
 #### Scenario: 头行与耗时行不计入窗口
 - **GIVEN** thinkingWindow 开启
@@ -66,7 +66,7 @@ The system SHALL 提供 thinkingWindow（默认关闭）设置项；开启后 th
 - **THEN** 每个块的窗口行队列独立计数，互不影响
 
 ### Requirement: 滚动窗口历史剥离
-The system SHALL 在窗口开启产生的渲染文本进入对话历史时完整剥离：stripThinkingTextHistory 的剥离正则 SHALL 覆盖三形态（`\n<dim>line<reset>` 常规行、无前导 `\n` 的 `<dim>line<reset>` 重写行、`\x1b[\d*A\x1b[J` 控制码序列），剥离后无控制码与文案残留。
+The system SHALL 在窗口开启产生的渲染文本进入对话历史时完整剥离：stripThinkingTextHistory 的剥离正则 SHALL 覆盖三形态（`\n<dim>line<reset>` 常规行、无前导 `\n` 的 `<dim>line<reset>` 重写行、`\x1b[\d*A\r?\x1b[J` 控制码序列），剥离后无控制码与文案残留。
 
 #### Scenario: 含控制码块剥离干净
 - **GIVEN** 历史消息中存在窗口开启时渲染的 text 块（含控制码与重写行）

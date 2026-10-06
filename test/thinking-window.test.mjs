@@ -9,7 +9,7 @@ import {
 const ANSI_DIM = '\x1b[2m';
 const ANSI_RESET = '\x1b[0m';
 const HEADER = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
-const CURSOR_RE = /\x1b\[\d+A\x1b\[J/;
+const CURSOR_RE = /\x1b\[\d+A\r?\x1b\[J/;
 
 function ev(type, extra = {}) { return { type, ...extra }; }
 
@@ -50,9 +50,9 @@ test('window N=3: first 3 lines stream normally, 4th line triggers full rewrite'
     assert.equal(texts[2], `\n${ANSI_DIM}l2${ANSI_RESET}`);
     assert.equal(texts[3], `\n${ANSI_DIM}l3${ANSI_RESET}`);
 
-    // 第 4 行：单 delta 整窗重写 — ESC[3A ESC[J + 首行无 \n 前导 + 其余 \n 分隔
-    assert.match(texts[4], /^\x1b\[3A\x1b\[J/);
-    assert.equal(texts[4], `\x1b[3A\x1b[J${ANSI_DIM}l2${ANSI_RESET}\n${ANSI_DIM}l3${ANSI_RESET}\n${ANSI_DIM}l4${ANSI_RESET}`);
+    // 第 4 行：单 delta 整窗重写 — ESC[2A \r ESC[J + 首行无 \n 前导 + 其余 \n 分隔
+    assert.match(texts[4], /^\x1b\[2A\r\x1b\[J/);
+    assert.equal(texts[4], `\x1b[2A\r\x1b[J${ANSI_DIM}l2${ANSI_RESET}\n${ANSI_DIM}l3${ANSI_RESET}\n${ANSI_DIM}l4${ANSI_RESET}`);
 
     // stop：pending 已空，无 tail，只有耗时行（\n 前导追加在窗口下方）
     assert.equal(texts[5], `\n${ANSI_DIM}💭 Thought for 1s${ANSI_RESET}`);
@@ -83,7 +83,7 @@ test('window N=3: pending tail at stop joins window via rewrite', async () => {
     for await (const e of transformThinkingAsTextEvents(events, { thinkingAsText: true, windowLines: 3 })) out.push(e);
     const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
     // stop 时 tail(l4) 走整窗重写：l2,l3,l4
-    assert.match(texts.at(-2), /^\x1b\[3A\x1b\[J/);
+    assert.match(texts.at(-2), /^\x1b\[2A\r\x1b\[J/);
     assert.ok(texts.at(-2).includes(`${ANSI_DIM}l4${ANSI_RESET}`));
     assert.ok(!texts.at(-2).includes('l1'), 'l1 rolled out of window');
     // 耗时行仍在窗口下方
@@ -127,7 +127,7 @@ function windowRenderedText(lines, finalWindowLines, durationSecs) {
     let text = HEADER;
     const N = finalWindowLines.length;
     for (const l of lines) text += `\n${ANSI_DIM}${l}${ANSI_RESET}`;
-    text += `\x1b[${N}A\x1b[J`;
+    text += `\x1b[${N - 1}A\r\x1b[J`;
     text += finalWindowLines.map((l) => `${ANSI_DIM}${l}${ANSI_RESET}`).join('\n');
     if (durationSecs != null) text += `\n${ANSI_DIM}💭 Thought for ${durationSecs}s${ANSI_RESET}`;
     return text;
@@ -144,7 +144,7 @@ test('strip: multiple rewrites + duration line fully stripped', () => {
     let text = HEADER;
     for (let i = 1; i <= 10; i++) text += `\n${ANSI_DIM}l${i}${ANSI_RESET}`;
     for (let k = 0; k < 4; k++) {
-        text += `\x1b[10A\x1b[J${ANSI_DIM}w${k}0${ANSI_RESET}`;
+        text += `\x1b[9A\r\x1b[J${ANSI_DIM}w${k}0${ANSI_RESET}`;
         for (let i = 1; i < 10; i++) text += `\n${ANSI_DIM}w${k}${i}${ANSI_RESET}`;
     }
     text += `\n${ANSI_DIM}💭 Thought for 42s${ANSI_RESET}`;
@@ -167,7 +167,7 @@ test('strip: string content with window block stripped', () => {
     const windowBlock = windowRenderedText(['l1', 'l2', 'l3', 'l4'], ['l2', 'l3', 'l4'], 8);
     const messages = [{ role: 'assistant', content: `a\n${windowBlock}\nb` }];
     const out = stripThinkingTextHistory(messages);
-    assert.ok(!out[0].content.includes('\x1b[10A') && !out[0].content.includes('💭'));
+    assert.ok(!out[0].content.includes('\x1b[9A') && !out[0].content.includes('💭'));
     assert.ok(out[0].content.startsWith('a\n'));
     assert.ok(out[0].content.endsWith('\nb'));
 });

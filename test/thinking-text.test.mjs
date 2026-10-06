@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {
+    formatDurationLine,
     formatThinkingAsText,
     stripThinkingTextHistory,
     isClaudeCodeUserAgent,
@@ -25,6 +26,18 @@ async function collect(events) {
 }
 
 async function* fromArray(arr) { yield* arr; }
+
+// ---------- 时长格式 ----------
+
+test('formatDurationLine: <60s shows Xs, >=60s shows XmYs, 1s floor', () => {
+    const strip = (s) => s.replace(`${ANSI_DIM}💭 Thought for `, '').replace(ANSI_RESET, '');
+    assert.equal(strip(formatDurationLine(0.2)), '1s');
+    assert.equal(strip(formatDurationLine(59.4)), '59s');
+    assert.equal(strip(formatDurationLine(60)), '1m0s');
+    assert.equal(strip(formatDurationLine(76)), '1m16s');
+    assert.equal(strip(formatDurationLine(600)), '10m0s');
+    assert.equal(strip(formatDurationLine(3661)), '61m1s');
+});
 
 // ---------- 渲染格式 ----------
 

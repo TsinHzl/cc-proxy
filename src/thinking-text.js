@@ -1,4 +1,6 @@
 // thinking → text 渲染核心，逐字节对齐 agy-cc-proxy src/cloudcode/thinking-text-streamer.js
+import { logger } from './logger.js';
+
 export const MAX_THINKING_TEXT_BLOCK_BYTES = 256 * 1024;
 export const MAX_THINKING_TEXT_RESPONSE_BYTES = 1024 * 1024;
 
@@ -11,9 +13,9 @@ const THINKING_TEXT_HEADER_LINE = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const THINKING_TEXT_LINE_RE = `\\n${escapeRegExp(ANSI_DIM)}[^\\n]*?${escapeRegExp(ANSI_RESET)}`;
 // Rolling-window mode rewrites the whole window in one delta: the cursor
-// control sequence leads and the first rewritten line has no leading '\n'
-// (the cursor already sits at its line start).
-const THINKING_WINDOW_CURSOR_RE = '\\x1b\\[\\d*A\\x1b\\[J';
+// control sequence leads (up N-1 lines, carriage return to column 0, erase)
+// and the first rewritten line has no leading '\n'.
+const THINKING_WINDOW_CURSOR_RE = '\\x1b\\[\\d*A\\r?\\x1b\\[J';
 const THINKING_WINDOW_LINE_RE = `${escapeRegExp(ANSI_DIM)}[^\\n]*?${escapeRegExp(ANSI_RESET)}`;
 const THINKING_TEXT_BLOCK_RE = new RegExp(
     `${escapeRegExp(THINKING_TEXT_HEADER_LINE)}(?:${THINKING_TEXT_LINE_RE}|${THINKING_WINDOW_LINE_RE}|${THINKING_WINDOW_CURSOR_RE})*`,
@@ -61,11 +63,14 @@ export function formatThinkingAsText(thinking) {
 }
 
 // Duration summary appended as the final line when a thinking block stops, e.g.
-// `💭 Thought for 12s` (always whole seconds with a 1s floor, matching
-// agy-cc-proxy thinking-text-streamer.js).
+// `💭 Thought for 12s` or `💭 Thought for 1m16s` (whole seconds with a 1s floor,
+// <60s shows `Xs`, ≥60s shows `XmYs`; matching agy-cc-proxy thinking-text-streamer.js).
 export function formatDurationLine(seconds) {
     const total = Math.max(1, Math.round(seconds));
-    return `${ANSI_DIM}💭 Thought for ${total}s${ANSI_RESET}`;
+    const label = total < 60
+        ? `${total}s`
+        : `${Math.floor(total / 60)}m${total % 60}s`;
+    return `${ANSI_DIM}💭 Thought for ${label}${ANSI_RESET}`;
 }
 
 export function stripThinkingTextHistory(messages) {
@@ -152,15 +157,18 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     });
 
     // Window overflow: emit a cursor-up + erase sequence, then rewrite the
-    // whole window in a single delta. The first rewritten line has no leading
-    // '\n' (the cursor already sits at its line start after the erase); the
-    // rest are '\n'-led so the block never gains extra lines on screen.
+    // whole window in a single delta. After streaming, the cursor sits at the
+    // END of the last line (not its start), so the sequence first moves up
+    // N-1 lines to reach the first window line, then '\r' returns to column
+    // 0 before ESC[J erases from the cursor to end of screen. The first
+    // rewritten line therefore has no leading '\n'; the rest are '\n'-led so
+    // the block never gains extra lines on screen.
     const rewriteWindow = function* (block, incomingLine) {
         const lines = [...block.emittedLines.slice(1), incomingLine];
         block.emittedLines = lines;
         yield textDeltaEvent(
             block.index,
-            `\x1b[${windowLines}A\x1b[J${lines.map((l) => `${ANSI_DIM}${l}${ANSI_RESET}`).join(`\n`)}`
+            `\x1b[${windowLines - 1}A\r\x1b[J${lines.map((l) => `${ANSI_DIM}${l}${ANSI_RESET}`).join(`\n`)}`
         );
     };
 
@@ -206,7 +214,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
 
     const discardPendingBlock = (reason) => {
         if (!pendingBlock || pendingBlock.discarded) return;
-        console.warn(`[cc-proxy] dropping thinking text block index=${pendingBlock.index} reason=${reason} blockBytes=${pendingBlock.bytes} responseBytes=${responseThinkingBytes}`);
+        logger.warn(`[cc-proxy] dropping thinking text block index=${pendingBlock.index} reason=${reason} blockBytes=${pendingBlock.bytes} responseBytes=${responseThinkingBytes}`);
         pendingBlock.thinking = '';
         pendingBlock.pending = '';
         pendingBlock.discarded = true;

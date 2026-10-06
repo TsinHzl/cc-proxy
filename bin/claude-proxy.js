@@ -6,9 +6,21 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { createProxyServer } from '../src/proxy.js';
 import { readConfig } from '../src/settings.js';
+import { logger } from '../src/logger.js';
 import { runSettingsCli } from './settings-cli.js';
 
 const CLAUDE_BIN = process.env.CLAUDE_PROXY_BIN || 'claude';
+
+// Crash-path logging also goes through the silent-by-default logger: Node's
+// default uncaughtException/unhandledRejection handlers print stacks straight
+// to stderr, which would leak into Claude Code's Ink UI via stdio inheritance.
+process.on('uncaughtException', (err) => {
+    logger.error('[cc-proxy] uncaught:', err);
+    process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+    logger.error('[cc-proxy] unhandled rejection:', err);
+});
 
 function main() {
     // --setting: interactive settings page, no proxy/claude started.
@@ -27,7 +39,7 @@ function main() {
 
     server.listen(0, '127.0.0.1', () => {
         const { port } = server.address();
-        console.error(`[claude-proxy] listening on http://127.0.0.1:${port} (upstream: ${originalBase || 'https://api.anthropic.com'})`);
+        logger.warn(`[claude-proxy] listening on http://127.0.0.1:${port} (upstream: ${originalBase || 'https://api.anthropic.com'})`);
 
         const child = spawn(CLAUDE_BIN, process.argv.slice(2), {
             stdio: 'inherit',
@@ -42,7 +54,7 @@ function main() {
             process.exit(code ?? 0);
         });
         child.on('error', (err) => {
-            console.error(`[claude-proxy] failed to spawn ${CLAUDE_BIN}: ${err.message}`);
+            logger.error(`[claude-proxy] failed to spawn ${CLAUDE_BIN}: ${err.message}`);
             server.close();
             process.exit(1);
         });

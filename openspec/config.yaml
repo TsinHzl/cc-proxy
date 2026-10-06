@@ -11,6 +11,11 @@ context: |
   Critical invariants:
     - thinking→text rendering format MUST stay byte-compatible with agy-cc-proxy
       `src/cloudcode/thinking-text-streamer.js` (header line + `\n> ...` dim lines,
-      blank lines skipped, no trailing newline)
+      blank lines skipped, no trailing newline) WHEN the thinking rolling window
+      is OFF (default). Window ON is a cc-proxy-specific extension (ANSI cursor
+      rewrite, `ESC[(N-1)A CR ESC[J`) and is exempt from byte compatibility
     - Non-SSE traffic (headers, body, status) must pass through unmodified
     - SSE events unrelated to thinking blocks must pass through unmodified
+    - Proxy-internal logging MUST be silent by default (src/logger.js); any
+      stdout/stderr output leaks into Claude Code's Ink UI via stdio inheritance.
+      CC_PROXY_LOG=1 restores stderr for debugging
