@@ -1,0 +1,25 @@
+uninstall.sh
+  727a034631d893bc 1-19
+install.sh
+  727a034631d893bc 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "de641ad360a4eb84f5efb7f50a60ee466e97003a",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 101,
+      "total_deletions": 31,
+      "accepted_lines": 95,
+      "overriden_lines": 0
+    }
+  }
+}
