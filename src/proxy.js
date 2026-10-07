@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { resolveUpstream, forwardRequest } from './upstream.js';
+import { forwardRequestWithRetry, resolveUpstream } from './upstream.js';
 import { logger } from './logger.js';
 import {
     isClaudeCodeUserAgent,
@@ -180,7 +180,7 @@ export function createProxyServer({ baseUrlEnv, usageTracker, debugLog, forwardS
                 }
             }
 
-            forwardRequest(req, body, target, (upstreamRes) => {
+            forwardRequestWithRetry(req, body, target, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
                 const logStream = dbg.requestStart(req, bodyBuffer);
@@ -256,7 +256,7 @@ export function createProxyServer({ baseUrlEnv, usageTracker, debugLog, forwardS
                     type: 'error',
                     error: { type: 'api_error', message: `upstream request failed: ${err.message}` }
                 }));
-            });
+            }, { isClientGone: () => res.destroyed || res.writableEnded });
         });
     });
 }
