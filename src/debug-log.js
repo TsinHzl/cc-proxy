@@ -26,14 +26,21 @@ export function createDebugLog({ dir = defaultDebugLogDir(), enabled = isDebugEn
         const name = `${stamp}-${String(seq).padStart(4, '0')}-${req.method || 'GET'}${urlPath}.log`;
         try {
             fs.mkdirSync(dir, { recursive: true });
-            return fs.createWriteStream(path.join(dir, name), { flags: 'a' });
+            // 0o600：日志可能含用户粘贴的代码/凭据，仅属主可读写。
+            const stream = fs.createWriteStream(path.join(dir, name), { flags: 'a', mode: 0o600 });
+            // 写流错误（磁盘满/权限变更/write-after-end）是异步事件，必须挂
+            // 监听兜底，否则会以未捕获异常终止整个代理进程。
+            stream.on('error', () => {});
+            return stream;
         } catch {
             return null;
         }
     };
 
     const writeLine = (stream, line) => {
-        if (!stream) return;
+        if (!stream || stream.destroyed || stream.writableEnded) return;
+        // 写失败静默丢弃；背压交由 Node 内部缓冲（受 highWaterMark 约束），
+        // debug 数据让位于代理流量。
         try {
             stream.write(line + '\n');
         } catch {
@@ -64,7 +71,7 @@ export function createDebugLog({ dir = defaultDebugLogDir(), enabled = isDebugEn
 
         // 请求结束：记录状态与耗时并关流。
         requestEnd(stream, statusCode, startedAtMs) {
-            if (!stream) return;
+            if (!stream || stream.destroyed || stream.writableEnded) return;
             const ms = startedAtMs == null ? '?' : Math.round(now().getTime() - startedAtMs.getTime());
             writeLine(stream, `# status=${statusCode} duration=${ms}ms`);
             stream.end();

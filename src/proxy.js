@@ -189,7 +189,12 @@ export function createProxyServer({ baseUrlEnv, usageTracker, debugLog, forwardS
                 if (!isClaudeCode) {
                     res.writeHead(upstreamRes.statusCode, upstreamRes.headers);
                     upstreamRes.pipe(res);
-                    upstreamRes.on('end', () => dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt));
+                    // 收尾覆盖正常结束 / 上游错误 / 客户端断开三条路径，
+                    // 防止日志写流未关闭导致 fd 泄漏（requestEnd 幂等）。
+                    const finishLog = () => dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
+                    upstreamRes.on('end', finishLog);
+                    upstreamRes.on('error', finishLog);
+                    res.on('close', finishLog);
                     return;
                 }
 

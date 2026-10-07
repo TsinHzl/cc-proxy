@@ -41,6 +41,8 @@ export function extractUsage(usage) {
 // 从单个响应（SSE 事件数组或非流式 message JSON）提取 usage：
 // message_delta 的 usage 覆盖 message_start 的（最终输出计数以后到者为准）。
 export function extractUsageFromResponseEvents(events) {
+    // 非数组入参直接返回 null，绝不抛出（与 suggestion-mode 的容错风格一致）。
+    if (!Array.isArray(events)) return null;
     let result = null;
     for (const event of events) {
         if (event?.type === 'message_start' && event.message?.usage) {
@@ -98,7 +100,11 @@ export function createUsageTracker({ usageFile = defaultUsagePath(), now = () =>
         const all = readUsageFile(usageFile);
         const day = normalizeDay(all[key]);
         day.requests += 1;
-        for (const field of NUM_FIELDS) day[field] += usage[field];
+        // 逐字段整数校验：非法值按 0 计，避免 NaN 污染导致落盘 null 抹掉历史累计。
+        for (const field of NUM_FIELDS) {
+            const v = usage[field];
+            if (Number.isInteger(v) && v > 0) day[field] += v;
+        }
         all[key] = day;
         try {
             fs.mkdirSync(path.dirname(usageFile), { recursive: true });

@@ -122,28 +122,31 @@ test('non-suggestion CC request passes through normally in both switch states', 
     const { state, started } = startMockUpstream();
     const upstream = await started;
 
-    for (const forwardSuggestionMode of [false, true]) {
-        const proxy = createProxyServer({
-            baseUrlEnv: `http://127.0.0.1:${upstream.address().port}`,
-            forwardSuggestionMode
-        });
-        await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
-        try {
-            const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
-                method: 'POST', headers: CC_HEADERS, body: normalBody
+    try {
+        for (const forwardSuggestionMode of [false, true]) {
+            const proxy = createProxyServer({
+                baseUrlEnv: `http://127.0.0.1:${upstream.address().port}`,
+                forwardSuggestionMode
             });
-            await res.text();
-            assert.equal(res.status, 200);
-        } finally {
-            proxy.closeAllConnections?.();
-            proxy.close();
+            await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+            try {
+                const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+                    method: 'POST', headers: CC_HEADERS, body: normalBody
+                });
+                await res.text();
+                assert.equal(res.status, 200);
+            } finally {
+                proxy.closeAllConnections?.();
+                proxy.close();
+            }
         }
+        assert.equal(state.bodies.length, 2);
+        assert.ok(state.bodies.every((b) => b.includes('正常主对话输入')));
+    } finally {
+        // upstream 必须纳入 finally 关闭，否则循环内断言失败会残留 listening 句柄导致进程挂起。
+        upstream.closeAllConnections?.();
+        upstream.close();
     }
-    assert.equal(state.bodies.length, 2);
-    assert.ok(state.bodies.every((b) => b.includes('正常主对话输入')));
-    // 测试 4 的 upstream 在循环外创建，必须在末尾关闭，否则 listening Server 句柄残留导致进程挂起。
-    upstream.closeAllConnections?.();
-    upstream.close();
 });
 
 test('non-CC client sending suggestion payload: forwarded verbatim (unaffected)', async () => {
