@@ -1,0 +1,27 @@
+test/upstream-retry.test.mjs
+  727a034631d893bc 1-121
+src/proxy.js
+  727a034631d893bc 2,183,259
+src/upstream.js
+  727a034631d893bc 3,28-30,32-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "4f63820852336f4f52cf3d47998f79c1f86939da",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 168,
+      "overriden_lines": 0
+    }
+  }
+}
