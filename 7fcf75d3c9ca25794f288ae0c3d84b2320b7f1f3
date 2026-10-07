@@ -1,0 +1,55 @@
+bin/claude-proxy.js
+  727a034631d893bc 7,9-10,14,29-35,44-47,59-60,62-65
+src/debug-log.js
+  727a034631d893bc 1-73
+src/proxy.js
+  727a034631d893bc 10-12,32-46,70,72-73,83-85,87,133-141,149,165-182,186,192,203,211-212,225,227-231,235-236,240,245-247
+src/usage.js
+  727a034631d893bc 1-119
+test/settings.test.mjs
+  727a034631d893bc 73-95
+README.en.md
+  727a034631d893bc 28,57,66-68,121-122,127-163,174,176,178-179
+test/debug-log.test.mjs
+  727a034631d893bc 1-59
+test/proxy-usage-debug.test.mjs
+  727a034631d893bc 1-155
+README.md
+  727a034631d893bc 27,54,63-64,105,117-146,157,159,161-162
+test/usage.test.mjs
+  727a034631d893bc 1-102
+test/cli.test.mjs
+  727a034631d893bc 1-19
+src/suggestion-mode.js
+  727a034631d893bc 1-82
+test/suggestion-mode.test.mjs
+  727a034631d893bc 1-107
+src/settings.js
+  727a034631d893bc 8-11
+bin/settings-cli.js
+  727a034631d893bc 4,25-26,84,86,92-94,96,103,110-116,118
+test/proxy-suggestion.test.mjs
+  727a034631d893bc 1-31,34-65,68-89,92-113,116-137,139-143,147-156,158-162,165-168
+test/settings-cli.test.mjs
+  727a034631d893bc 36,44,48-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "7fcf75d3c9ca25794f288ae0c3d84b2320b7f1f3",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 1326,
+      "total_deletions": 130,
+      "accepted_lines": 1224,
+      "overriden_lines": 2
+    }
+  }
+}
