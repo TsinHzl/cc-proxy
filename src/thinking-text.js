@@ -186,6 +186,16 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     };
 
     for await (const event of events) {
+        // Ping/pong 心跳事件透传，但绝不重置当前 thinking 块的跟踪状态：
+        // 真实上游（如部分网关）会在 thinking 块中途插发 ping，若在此处
+        // 丢失 pendingBlock，后续 signature_delta/stop 会作为孤儿事件泄漏
+        // 给客户端（content_block_delta 先于 content_block_start，CC 解析
+        // 中断后表现为"请求成功但收不到回复"）。
+        if (event.type === 'ping') {
+            yield event;
+            continue;
+        }
+
         if (pendingBlock) {
             if (isMatchingThinkingDelta(event, pendingBlock.index)) {
                 const thinkingDelta = event.delta.thinking || '';

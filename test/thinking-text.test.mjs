@@ -306,6 +306,60 @@ function startMockUpstream(events) {
     return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
+// ---------- 集成：代理端到端（mock 上游 SSE，含跨 chunk 缓冲） ----------
+
+// 真实网关形态：thinking 块中途夹发 ping，且 thinking 块无 thinking_delta
+// 只有 signature_delta（gpt 系模型经网关转 Anthropic 协议的典型序列）。
+test('proxy e2e: ping inside thinking block keeps tracking, no orphan events leak', async () => {
+    const upstreamEvents = [
+        ev('message_start', { message: {} }),
+        ev('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
+        ev('ping'),
+        ev('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'sig-only' } }),
+        ev('content_block_stop', { index: 0 }),
+        ev('content_block_start', { index: 1, content_block: { type: 'tool_use', id: 'toolu_1', name: 'get_weather', input: {} } }),
+        ev('content_block_delta', { index: 1, delta: { type: 'input_json_delta', partial_json: '{"city":"北京"}' } }),
+        ev('content_block_stop', { index: 1 }),
+        ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 10, output_tokens: 5 } }),
+        ev('message_stop')
+    ];
+    const upstream = await startMockUpstream(upstreamEvents);
+    const proxy = createProxyServer({ baseUrlEnv: `http://127.0.0.1:${upstream.address().port}` });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST',
+            headers: { 'user-agent': 'claude-cli/2.1.231', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.6-terra', messages: [{ role: 'user', content: '查天气' }] })
+        });
+        assert.equal(res.status, 200);
+        const raw = await res.text();
+        assert.ok(!raw.includes('signature_delta'), 'signature events stripped');
+        assert.ok(raw.includes('"type":"tool_use"'), 'tool_use block passed through');
+        assert.ok(raw.includes('"stop_reason":"tool_use"'), 'message_delta passed through');
+
+        // 输出事件序列完整性：任何 content_block_delta/stop 的 index 必须先有
+        // 对应 content_block_start（孤儿事件会让 CC 解析中断、表现为无回复）。
+        const outEvents = raw.split('\n\n').filter(Boolean).map((b) => {
+            const d = b.match(/^data: (.+)$/m);
+            return d ? JSON.parse(d[1]) : null;
+        }).filter(Boolean);
+        const startedIndexes = new Set();
+        for (const e of outEvents) {
+            if (e.type === 'content_block_start') startedIndexes.add(e.index);
+            if ((e.type === 'content_block_delta' || e.type === 'content_block_stop') && e.index !== undefined) {
+                assert.ok(startedIndexes.has(e.index), `index=${e.index} ${e.type} must follow its content_block_start`);
+            }
+        }
+        assert.ok(outEvents.some((e) => e.type === 'ping'), 'ping passthrough');
+        assert.equal(outEvents.at(-1).type, 'message_stop', 'stream ends with message_stop');
+    } finally {
+        proxy.close();
+        upstream.close();
+    }
+});
+
 test('proxy e2e: rewrites thinking to text for CC UA, splits across chunks', async () => {
     const upstreamEvents = [
         ev('message_start', { message: {} }),
