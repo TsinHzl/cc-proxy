@@ -105,7 +105,8 @@ cc-proxy --setting
 ```
 
 Opens an interactive settings page showing the active configuration (persisted
-to `~/.cc-proxy/config.json`) and its path; press Enter/Esc to exit. A missing
+to `~/.cc-proxy/config.json`) and its path. Press `1` to toggle the Suggestion
+Mode forwarding switch (see below); Enter/Esc exits without changes. A missing
 or corrupted config file falls back to defaults without affecting startup.
 
 ### Suggestion Mode
@@ -118,11 +119,26 @@ outside the main conversation (extra token cost). By default this proxy
 unaffected.
 
 Press `1` in the settings page to toggle forwarding (written to disk
-immediately): the terminal prints `Settings saved: Suggestion Mode forwarding → on/off (…)`
-and exits automatically. Enter/Esc exits without changes. When enabled,
-suggestion requests are forwarded upstream
+immediately): the terminal prints
+`Settings saved: Suggestion Mode forwarding → on/off (…)` and exits
+automatically. Enter/Esc exits without changes.
+
+```
+[1] Suggestion Mode 输入建议转发: 关（拦截建议请求，返回空响应）
+
+设置已保存：Suggestion Mode 输入建议转发 → 开（转发上游，可能产生额外计费）
+已退出。
+```
+
+(The settings page output is in Chinese; the lines above read: `[1] Suggestion
+Mode forwarding: off (intercept, return empty response)` / `Settings saved:
+Suggestion Mode forwarding → on (forward upstream, may incur extra cost)` /
+`Exited.`)
+
+When enabled, suggestion requests are forwarded upstream
 (Claude Code shows input suggestions, at extra cost). The switch persists as
-`forwardSuggestionMode` in `~/.cc-proxy/config.json`. The change takes effect on the **next session start** (the running proxy reads the config once at startup).
+`forwardSuggestionMode` in `~/.cc-proxy/config.json`. The change takes effect on
+the **next session start** (the running proxy reads the config once at startup).
 
 ### Usage tracking
 
@@ -172,9 +188,12 @@ npm test        # node:test unit + end-to-end tests (75 cases)
 | Path | Purpose |
 |---|---|
 | `bin/claude-proxy.js` | CLI entry: --version / --setting / start proxy → inject env → spawn claude |
+| `bin/settings-cli.js` | `--setting` interactive settings page: keypress assembly + menu loop |
 | `src/thinking-text.js` | Rendering core: formatting, streaming rewrite, history strip, UA gate |
-| `src/proxy.js` | HTTP proxy and response rewriting (SSE / non-streaming JSON), usage/debug hooks |
+| `src/proxy.js` | HTTP proxy and response rewriting (SSE / non-streaming JSON), Suggestion Mode intercept, usage/debug hooks |
 | `src/upstream.js` | Upstream URL resolution and request forwarding |
+| `src/settings.js` | Config read/write (`~/.cc-proxy/config.json`), missing/corrupt falls back to defaults |
+| `src/suggestion-mode.js` | Suggestion request detection and empty-response building (streaming/non-streaming) |
 | `src/usage.js` | Usage extraction and daily persistence (`~/.cc-proxy/usage.json`) |
 | `src/debug-log.js` | Per-request debug log (`CC_PROXY_DEBUG=1`) |
-| `test/thinking-text.test.mjs` | Unit and end-to-end tests |
+| `test/*.test.mjs` | Unit and end-to-end tests (node:test) |
