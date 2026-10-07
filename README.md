@@ -24,7 +24,7 @@ npm link          # 把 claude-proxy / cc-proxy 两个命令注册到全局 PATH
 验证：
 
 ```bash
-cc-proxy --version    # 输出 Claude Code 版本号（如 2.1.231 (Claude Code)）即安装成功
+claude-proxy --version    # 输出代理自身版本号（如 claude-proxy 1.0.0）即安装成功
 ```
 
 更新：
@@ -51,6 +51,7 @@ npm unlink -g cc-proxy
 ```bash
 cc-proxy                    # 起代理并进入交互式 Claude Code
 claude-proxy                # 等价命令
+cc-proxy -v                 # 查看代理版本号后退出
 cc-proxy -c                 # 参数原样透传给 claude（此处为 --continue）
 cc-proxy -p "解释这段代码"    # 非交互模式同样可用
 ```
@@ -59,7 +60,8 @@ cc-proxy -p "解释这段代码"    # 非交互模式同样可用
 
 1. 在 127.0.0.1 起一个本地透明代理（随机可用端口）
 2. 注入 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` 后 spawn `claude`（全部参数/stdio 透传）
-3. claude 退出后代理随之退出（退出码透传）
+3. claude 退出后代理随之退出（退出码透传），并在 stderr 打印本次会话用量总结
+   （请求数 / 输入 / 输出 / 缓存读写 tokens，需 `CC_PROXY_LOG=1` 查看）
 
 ### 指定上游
 
@@ -96,18 +98,66 @@ cc-proxy --setting
 
 进入交互式设置页，展示当前生效配置（持久化于 `~/.cc-proxy/config.json`）与落盘路径，回车/Esc 退出。配置文件缺失或损坏时自动回退默认值，不影响启动。
 
+### Suggestion Mode 输入建议
+
+Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建议请求（额外消耗 token）。本代理默认**拦截**这类请求并返回结构完整的空响应（流式/非流式自适应），主对话不受影响，`usage.json` 与 debug 日志零增量；非 Claude Code 客户端流量不受任何影响。
+
+在设置页按 `1` 切换转发开关（即时写盘）：终端打印「设置已保存：Suggestion Mode 输入建议转发 → 开/关（…）」后自动退出；回车/Esc 不做修改直接退出。切换后对下次启动的会话生效（已运行的代理在启动时读取一次配置）：
+
+```bash
+cc-proxy --setting
+```
+
+```
+[1] Suggestion Mode 输入建议转发: 关（拦截建议请求，返回空响应）
+```
+
+开启后建议请求正常转发上游（Claude Code 会展示输入建议，但会产生额外计费）。开关持久化于 `~/.cc-proxy/config.json` 的 `forwardSuggestionMode` 字段，**切换后对下次启动的会话生效**（已运行的代理在启动时读取一次配置）。
+
+### 用量统计
+
+代理自动从响应（SSE `message_start`/`message_delta` 或非流式 JSON）中提取 token 用量，按天累计持久化到 `~/.cc-proxy/usage.json`：
+
+```json
+{
+  "2026-10-07": {
+    "requests": 42,
+    "inputTokens": 123456,
+    "outputTokens": 5678,
+    "cacheReadTokens": 89012,
+    "cacheCreationTokens": 1234
+  }
+}
+```
+
+文件缺失或损坏时自动回退空统计，落盘失败不阻塞代理流量。`claude` 退出时会把本次会话的当日累计总结打印到 stderr（需 `CC_PROXY_LOG=1`）。
+
+### Debug 请求日志
+
+```bash
+CC_PROXY_DEBUG=1 cc-proxy
+```
+
+设置 `CC_PROXY_DEBUG=1` 后，每个请求的 method/url/status/耗时、请求体与 SSE 事件流逐条落盘到 `~/.cc-proxy/logs/`（每请求一个 `.log` 文件），用于排查第三方网关兼容性：
+
+- header 只记录名称，值（authorization、api key 等）不落盘
+- 写失败静默丢弃，绝不影响代理流量
+- 未设置时零开销、零文件
+
 ## 开发
 
 ```bash
-npm test        # node:test 单元 + 端到端测试（50 项）
+npm test        # node:test 单元 + 端到端测试（75 项）
 ```
 
 ## 目录结构
 
 | 路径 | 说明 |
 |---|---|
-| `bin/claude-proxy.js` | CLI 入口：起代理 → 注入 env → spawn claude |
+| `bin/claude-proxy.js` | CLI 入口：--version / --setting / 起代理 → 注入 env → spawn claude |
 | `src/thinking-text.js` | 渲染核心：格式化、流式改写、历史剥离、UA 门控 |
-| `src/proxy.js` | HTTP 代理与响应改写（SSE / 非流式 JSON） |
+| `src/proxy.js` | HTTP 代理与响应改写（SSE / 非流式 JSON）、usage/debug 挂接 |
 | `src/upstream.js` | 上游地址解析与请求转发 |
+| `src/usage.js` | 用量提取与按天持久化（`~/.cc-proxy/usage.json`） |
+| `src/debug-log.js` | 请求级 debug 日志（`CC_PROXY_DEBUG=1`） |
 | `test/thinking-text.test.mjs` | 单元与端到端测试 |

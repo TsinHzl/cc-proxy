@@ -25,7 +25,7 @@ npm link          # registers the claude-proxy / cc-proxy commands on your globa
 Verify:
 
 ```bash
-cc-proxy --version    # prints the Claude Code version, e.g. 2.1.231 (Claude Code)
+claude-proxy --version    # prints the proxy's own version, e.g. claude-proxy 1.0.0
 ```
 
 Updating:
@@ -54,6 +54,7 @@ npm unlink -g cc-proxy
 ```bash
 cc-proxy                    # start the proxy and enter interactive Claude Code
 claude-proxy                # equivalent command
+cc-proxy -v                 # print the proxy version and exit
 cc-proxy -c                 # arguments pass through to claude (--continue here)
 cc-proxy -p "explain this"  # non-interactive mode works too
 ```
@@ -62,7 +63,9 @@ What the command does:
 
 1. Starts a local transparent proxy on 127.0.0.1 (random free port)
 2. Spawns `claude` with `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` injected (all args/stdio passed through)
-3. Shuts the proxy down when claude exits (exit code passed through)
+3. Shuts the proxy down when claude exits (exit code passed through) and prints a
+   per-session usage summary to stderr (requests / input / output / cache tokens;
+   requires `CC_PROXY_LOG=1`)
 
 ### Choosing an upstream
 
@@ -105,18 +108,73 @@ Opens an interactive settings page showing the active configuration (persisted
 to `~/.cc-proxy/config.json`) and its path; press Enter/Esc to exit. A missing
 or corrupted config file falls back to defaults without affecting startup.
 
+### Suggestion Mode
+
+Claude Code sends extra `[SUGGESTION MODE`-prefixed input-suggestion requests
+outside the main conversation (extra token cost). By default this proxy
+**intercepts** them and returns a structurally complete empty response
+(streaming/non-streaming adaptive); the main conversation is unaffected and
+`usage.json` / debug logs see zero increase. Non-Claude-Code clients are
+unaffected.
+
+Press `1` in the settings page to toggle forwarding (written to disk
+immediately): the terminal prints `Settings saved: Suggestion Mode forwarding → on/off (…)`
+and exits automatically. Enter/Esc exits without changes. When enabled,
+suggestion requests are forwarded upstream
+(Claude Code shows input suggestions, at extra cost). The switch persists as
+`forwardSuggestionMode` in `~/.cc-proxy/config.json`. The change takes effect on the **next session start** (the running proxy reads the config once at startup).
+
+### Usage tracking
+
+The proxy automatically extracts token usage from responses (SSE
+`message_start`/`message_delta` or non-streaming JSON) and persists daily
+totals to `~/.cc-proxy/usage.json`:
+
+```json
+{
+  "2026-10-07": {
+    "requests": 42,
+    "inputTokens": 123456,
+    "outputTokens": 5678,
+    "cacheReadTokens": 89012,
+    "cacheCreationTokens": 1234
+  }
+}
+```
+
+A missing or corrupted file falls back to empty stats; write failures never
+block proxy traffic. When `claude` exits, the day's totals are printed to
+stderr (requires `CC_PROXY_LOG=1`).
+
+### Debug request log
+
+```bash
+CC_PROXY_DEBUG=1 cc-proxy
+```
+
+With `CC_PROXY_DEBUG=1`, each request's method/url/status/duration, request
+body, and SSE event stream are written to `~/.cc-proxy/logs/` (one `.log`
+file per request) — useful for troubleshooting third-party gateway
+compatibility:
+
+- Headers record names only; values (authorization, API keys, etc.) are never written
+- Write failures are silently dropped and never affect proxy traffic
+- When unset: zero overhead, zero files
+
 ## Development
 
 ```bash
-npm test        # node:test unit + end-to-end tests (50 cases)
+npm test        # node:test unit + end-to-end tests (75 cases)
 ```
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `bin/claude-proxy.js` | CLI entry: start proxy → inject env → spawn claude |
+| `bin/claude-proxy.js` | CLI entry: --version / --setting / start proxy → inject env → spawn claude |
 | `src/thinking-text.js` | Rendering core: formatting, streaming rewrite, history strip, UA gate |
-| `src/proxy.js` | HTTP proxy and response rewriting (SSE / non-streaming JSON) |
+| `src/proxy.js` | HTTP proxy and response rewriting (SSE / non-streaming JSON), usage/debug hooks |
 | `src/upstream.js` | Upstream URL resolution and request forwarding |
+| `src/usage.js` | Usage extraction and daily persistence (`~/.cc-proxy/usage.json`) |
+| `src/debug-log.js` | Per-request debug log (`CC_PROXY_DEBUG=1`) |
 | `test/thinking-text.test.mjs` | Unit and end-to-end tests |

@@ -1,7 +1,7 @@
 // 交互式设置页 CLI 壳：把终端按键流（回车/Esc/q）装配为指令 async iterable，
 // 交给纯逻辑 runSettingsMenu；非 TTY（管道冒烟）时按行解析为指令。零依赖。
 import readline from 'node:readline';
-import { readConfig, defaultConfigPath } from '../src/settings.js';
+import { readConfig, writeConfig, defaultConfigPath } from '../src/settings.js';
 
 // TTY：raw mode 逐键捕获；非 TTY：逐行解析（'enter'/'esc' 关键字，
 // 其余非空行按回车处理）。
@@ -22,13 +22,15 @@ function createInput() {
                 if (key.name === 'escape') return push({ key: 'esc' });
                 if (key.ctrl && key.name === 'c') return push({ key: 'esc' });
             }
-            if (str === 'q' || str === 'Q') push({ key: str });
+            // 其余可打印键（'1' 切换开关、'q' 退出）原样放行，由菜单路由。
+            if (str && !key?.ctrl && !key?.meta) push({ key: str });
         });
     } else {
         const rl = readline.createInterface({ input: process.stdin });
         rl.on('line', (line) => {
             const t = line.trim();
-            if (t === 'esc' || t === 'q') return push({ key: t });
+            if (t === 'esc' || t === 'q' || t === 'Q') return push({ key: t });
+            if (t === '1') return push({ key: '1' });
             if (t) push({ key: 'enter' });
         });
         rl.on('close', () => push({ key: 'eof' }));
@@ -79,32 +81,41 @@ function menuText(config, configPath) {
         '=============================',
         `配置文件: ${configPath}`,
         '',
-        `当前配置: ${JSON.stringify(config)}`,
+        `[1] Suggestion Mode 输入建议转发: ${config.forwardSuggestionMode ? '开（转发上游，可能产生额外计费）' : '关（拦截建议请求，返回空响应）'}`,
         '',
+        '按 1 切换 Suggestion Mode 开关（即时写盘）',
         '回车/Esc 退出'
     ].join('\n') + '\n';
 }
 
 // 菜单主循环。deps: { read, write, configPath, input, output }
-// input 为指令 async iterable：{ key: 'enter'|'esc'|'q'|'eof' }。
-// 展示当前配置与落盘路径；回车/Esc 退出整个设置页。
+// input 为指令 async iterable：{ key: 'enter'|'esc'|'q'|'1'|'eof' }。
+// 展示当前配置与落盘路径；`1` 切换 Suggestion Mode 开关，打印确认提示
+// （含新状态）后立即退出；回车/Esc 直接退出。
 export async function runSettingsMenu(deps) {
-    const config = deps.read();
+    let config = deps.read();
 
     const write = (s) => deps.output.write(s);
     const renderMenu = () => {
         write(menuText(config, deps.configPath));
     };
 
-    // 首帧只画一次；此后仅退出路径需要清屏重绘。
+    // 首帧只画一次；仅切换开关或退出路径需要重绘。
     renderMenu();
 
     for (;;) {
         const { value, done } = await deps.input[Symbol.asyncIterator]().next();
         const key = done ? 'eof' : value.key;
 
+        if (key === '1') {
+            // 切换开关并即时写盘，确认新状态后退出。
+            config = deps.write({ forwardSuggestionMode: !config.forwardSuggestionMode });
+            const state = config.forwardSuggestionMode ? '开（转发上游，可能产生额外计费）' : '关（拦截建议请求，返回空响应）';
+            write(`\n设置已保存：Suggestion Mode 输入建议转发 → ${state}\n已退出。\n`);
+            return config;
+        }
         if (key === 'esc' || key === 'q' || key === 'Q' || key === 'enter' || key === 'eof') {
-            write('\n已退出，未做修改。\n');
+            write('\n已退出。\n');
             return config;
         }
         // 其他键忽略

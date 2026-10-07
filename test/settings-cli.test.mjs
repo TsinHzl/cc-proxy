@@ -33,16 +33,35 @@ async function driveMenu(t, dir, keys) {
 test('settings menu: shows config path and exits without changes (esc)', async (t) => {
     const dir = tmpDir(t);
     const { config, output } = await driveMenu(t, dir, ['esc']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 } });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
     assert.match(output, /配置文件: .*config\.json/);
-    assert.match(output, /已退出，未做修改/);
+    assert.match(output, /已退出/);
 });
 
 test('settings menu: enter also exits without changes', async (t) => {
     const dir = tmpDir(t);
     const { config } = await driveMenu(t, dir, ['enter']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 } });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false, 'no config written');
+});
+
+test('settings menu: key 1 toggles forwardSuggestionMode, confirms state, and exits', async (t) => {
+    const dir = tmpDir(t);
+    // 1 → 切到开并提示后自动退出；落盘为开启态。
+    const { config, output } = await driveMenu(t, dir, ['1']);
+    assert.equal(config.forwardSuggestionMode, true);
+    assert.match(output, /设置已保存：Suggestion Mode 输入建议转发 → 开/);
+    assert.match(output, /已退出/);
+    assert.equal(readConfig(dir).forwardSuggestionMode, true);
+});
+
+test('settings menu: key 1 toggles off state confirmation when starting from on', async (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ forwardSuggestionMode: true }, dir);
+    const { config, output } = await driveMenu(t, dir, ['1']);
+    assert.equal(config.forwardSuggestionMode, false);
+    assert.match(output, /设置已保存：Suggestion Mode 输入建议转发 → 关/);
+    assert.equal(readConfig(dir).forwardSuggestionMode, false);
 });
 
 // ---------- e2e 冒烟：--setting 管道喂入 → 不触碰真实配置 ----------

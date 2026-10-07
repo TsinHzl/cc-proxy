@@ -5,7 +5,10 @@ import path from 'node:path';
 import os from 'node:os';
 
 export const DEFAULT_CONFIG = Object.freeze({
-    thinkingWindow: { enabled: false, lines: 10 }
+    thinkingWindow: { enabled: false, lines: 10 },
+    // Suggestion Mode 放行开关：false（默认）拦截 CC 输入建议请求并返回空响应，
+    // true 时正常转发上游（展示输入建议，产生额外计费）。
+    forwardSuggestionMode: false
 });
 
 const MIN_LINES = 1;
@@ -16,15 +19,23 @@ export function defaultConfigPath() {
     return path.join(os.homedir(), '.cc-proxy', 'config.json');
 }
 
-// 行数非法（非整数、<1 或 >100）回退默认 10；enabled 非布尔回退 false。
+// 行数非法（非整数、<1 或 >100）回退默认 10；enabled / forwardSuggestionMode
+// 非布尔回退 false（默认拦截建议请求）。
 function normalizeConfig(raw) {
-    const config = { thinkingWindow: { ...DEFAULT_CONFIG.thinkingWindow } };
+    const config = {
+        thinkingWindow: { ...DEFAULT_CONFIG.thinkingWindow },
+        forwardSuggestionMode: DEFAULT_CONFIG.forwardSuggestionMode
+    };
     if (!raw || typeof raw !== 'object') return config;
     const tw = raw.thinkingWindow;
-    if (!tw || typeof tw !== 'object') return config;
-    if (typeof tw.enabled === 'boolean') config.thinkingWindow.enabled = tw.enabled;
-    if (Number.isInteger(tw.lines) && tw.lines >= MIN_LINES && tw.lines <= MAX_LINES) {
-        config.thinkingWindow.lines = tw.lines;
+    if (tw && typeof tw === 'object') {
+        if (typeof tw.enabled === 'boolean') config.thinkingWindow.enabled = tw.enabled;
+        if (Number.isInteger(tw.lines) && tw.lines >= MIN_LINES && tw.lines <= MAX_LINES) {
+            config.thinkingWindow.lines = tw.lines;
+        }
+    }
+    if (typeof raw.forwardSuggestionMode === 'boolean') {
+        config.forwardSuggestionMode = raw.forwardSuggestionMode;
     }
     return config;
 }
@@ -39,14 +50,19 @@ export function readConfig(envDir) {
     }
 }
 
-// 浅合并 partial 到当前配置后写回；thinkingWindow 为逐字段合并，
-// 未提供的字段保留原值（经 normalize 校验）。
+// 浅合并 partial 到当前配置后写回；thinkingWindow 为逐字段合并，顶层键
+// （forwardSuggestionMode）仅在 partial 提供合法布尔时更新，未提供保留原值。
+// 顶层键必须参与合并，否则会在下一次 thinkingWindow 写盘时被静默丢弃。
 export function writeConfig(partial, envDir) {
     const dir = envDir || path.join(os.homedir(), '.cc-proxy');
     const file = path.join(dir, 'config.json');
     const current = readConfig(dir);
     const merged = {
-        thinkingWindow: { ...current.thinkingWindow, ...partial?.thinkingWindow }
+        thinkingWindow: { ...current.thinkingWindow, ...partial?.thinkingWindow },
+        forwardSuggestionMode:
+            typeof partial?.forwardSuggestionMode === 'boolean'
+                ? partial.forwardSuggestionMode
+                : current.forwardSuggestionMode
     };
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify(normalizeConfig(merged), null, 2) + '\n');
