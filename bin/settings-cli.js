@@ -81,7 +81,7 @@ function menuText(config, configPath) {
         '=============================',
         `配置文件: ${configPath}`,
         '',
-        `[1] Suggestion Mode 输入建议转发: ${config.forwardSuggestionMode ? '开（转发上游，可能产生额外计费）' : '关（拦截建议请求，返回空响应）'}`,
+        `[1] Suggestion Mode 输入建议转发: ${config.forwardSuggestionMode ? '开(当前状态)' : '关(当前状态)'}`,
         '',
         '按 1 切换 Suggestion Mode 开关（即时写盘）',
         '回车/Esc 退出'
