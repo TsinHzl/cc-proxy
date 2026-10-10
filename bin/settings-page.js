@@ -34,6 +34,7 @@ header p { margin: 0; }
 .copy { max-width: 860px; }
 h2 { margin: 0; font-size: 13px; font-weight: 620; }
 .description { margin: 0; font-size: 12px; }
+.controls { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
 .switch { position: relative; flex: 0 0 auto; width: 38px; height: 22px; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .track { display: flex; align-items: center; padding: 3px; width: 38px; height: 22px; border-radius: 999px; background: var(--switch-off); cursor: pointer; transition: background .18s ease; }
@@ -45,13 +46,20 @@ h2 { margin: 0; font-size: 13px; font-weight: 620; }
 select {
     flex: 0 0 auto;
     height: 28px;
-    padding: 0 8px;
+    padding: 0 24px 0 10px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: var(--page-bg);
+    background: var(--card-bg);
     color: var(--text);
     font: inherit;
+    appearance: none;
+    /* 自绘下拉箭头（内联 data URI 无法引用 CSS 变量）：箭头色 #8b919a 须与 --muted 保持同步 */
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238b919a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
 }
+select:hover:not(:disabled) { border-color: var(--accent); }
+select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 select:disabled { cursor: wait; opacity: .62; }
 .status { min-height: 20px; margin: 8px 4px 0; color: var(--muted); }
 .status.error { color: var(--error); }
@@ -96,18 +104,20 @@ const PAGE_BODY = `
                 <h2>Effort 覆写</h2>
                 <p class="description">开启后无论 Claude Code 本地 effort 设置是什么，请求均以所选档位转发。</p>
             </div>
-            <label class="switch" for="effortOverrideEnabled">
-                <input id="effortOverrideEnabled" type="checkbox" disabled>
-                <span class="track" aria-hidden="true"></span>
-            </label>
-            <select id="effortOverrideLevel" aria-label="Effort 档位" disabled>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-                <option value="max">max</option>
-                <option value="ultracode">ultracode</option>
-            </select>
+            <div class="controls">
+                <select id="effortOverrideLevel" aria-label="Effort 档位" disabled>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                    <option value="max">max</option>
+                    <option value="ultracode">ultracode</option>
+                </select>
+                <label class="switch" for="effortOverrideEnabled">
+                    <input id="effortOverrideEnabled" type="checkbox" disabled>
+                    <span class="track" aria-hidden="true"></span>
+                </label>
+            </div>
         </div>
     </section>
     <p id="status" class="status" role="status" aria-live="polite"></p>

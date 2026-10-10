@@ -53,7 +53,8 @@ test('page: contains no external resources or extra settings', () => {
 
     assert.doesNotMatch(html, /<script[^>]+src=/i);
     assert.doesNotMatch(html, /<link[^>]+href=/i);
-    assert.doesNotMatch(html, /https?:\/\//i);
+    // 禁止外部资源引用；内联 data: URI（如 select 箭头 SVG）允许，先剥离再匹配
+    assert.doesNotMatch(html.replace(/data:[^"]*/g, ''), /https?:\/\//i);
     assert.doesNotMatch(html, /账号选择|RPM|Admin Password|上游代理|语言切换/);
 });
 
