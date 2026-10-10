@@ -1,0 +1,25 @@
+README.md
+  727a034631d893bc 113
+bin/settings-page.js
+  727a034631d893bc 186,189-196,198,200-206,211-229,234-241,243-250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "430c4469a2dc9a82d3aa31b0e5f71a799e14ee38",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 67,
+      "total_deletions": 14,
+      "accepted_lines": 53,
+      "overriden_lines": 3
+    }
+  }
+}
