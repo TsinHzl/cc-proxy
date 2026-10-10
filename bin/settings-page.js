@@ -42,6 +42,17 @@ h2 { margin: 0 0 4px; font-size: 17px; font-weight: 620; }
 .switch input:checked + .track::after { transform: translateX(20px); }
 .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 3px; }
 .switch input:disabled + .track { cursor: wait; opacity: .62; }
+select {
+    flex: 0 0 auto;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--page-bg);
+    color: var(--text);
+    font: inherit;
+}
+select:disabled { cursor: wait; opacity: .62; }
 .status { min-height: 24px; margin: 14px 4px 0; color: var(--muted); }
 .status.error { color: var(--error); }
 @media (max-width: 640px) {
@@ -80,6 +91,21 @@ const PAGE_BODY = `
                 <span class="track" aria-hidden="true"></span>
             </label>
         </div>
+        <div class="setting">
+            <div class="copy">
+                <h2>Effort 覆写</h2>
+                <p class="description">开启后无论 Claude Code 本地 effort 设置是什么，请求均以所选档位转发。</p>
+            </div>
+            <label class="switch" for="effortOverrideEnabled">
+                <input id="effortOverrideEnabled" type="checkbox" disabled>
+                <span class="track" aria-hidden="true"></span>
+            </label>
+            <select id="effortOverrideLevel" aria-label="Effort 档位" disabled>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+            </select>
+        </div>
     </section>
     <p id="status" class="status" role="status" aria-live="polite"></p>
 </main>
@@ -96,26 +122,39 @@ const PAGE_SCRIPT = `
     // 是否存在进行中的 PATCH 保存。
     let saving = false;
     const status = document.getElementById('status');
-    const fields = ['forwardSuggestionMode', 'thinkingAsText'];
+    // 布尔开关字段；effortOverride 为嵌套字段（data.effortOverride.enabled）。
+    const switchFields = ['forwardSuggestionMode', 'thinkingAsText', 'effortOverrideEnabled'];
+    // 所需禁用的全部控件（开关 + 档位下拉）。
+    const controls = [...switchFields, 'effortOverrideLevel'];
 
     // disabled 由状态派生：租约不活跃或有保存进行中 → 禁用。
     function setDisabled(disabled) {
         const effective = disabled || !leaseActive || saving;
-        for (const key of fields) {
+        for (const key of controls) {
             document.getElementById(key).disabled = effective;
         }
     }
 
     function applySettings(data) {
-        for (const key of fields) {
-            document.getElementById(key).checked = data[key];
+        for (const key of switchFields) {
+            const value = key === 'effortOverrideEnabled'
+                ? data.effortOverride?.enabled
+                : data[key];
+            document.getElementById(key).checked = value;
         }
+        document.getElementById('effortOverrideLevel').value
+            = data.effortOverride?.level ?? 'high';
     }
 
     function acceptSettings(data) {
-        authoritativeSnapshot = Object.fromEntries(
-            fields.map((key) => [key, data[key]])
-        );
+        authoritativeSnapshot = {
+            forwardSuggestionMode: data.forwardSuggestionMode,
+            thinkingAsText: data.thinkingAsText,
+            effortOverride: {
+                enabled: data.effortOverride?.enabled,
+                level: data.effortOverride?.level
+            }
+        };
         applySettings(authoritativeSnapshot);
     }
 
@@ -153,17 +192,21 @@ const PAGE_SCRIPT = `
         acceptSettings(data);
     }
 
-    for (const key of fields) {
+    for (const key of switchFields) {
         const input = document.getElementById(key);
         input.addEventListener('change', async () => {
             const requestedValue = input.checked;
+            // 嵌套字段 effortOverrideEnabled 对应 API key effortOverride.enabled。
+            const apiKey = key === 'effortOverrideEnabled'
+                ? 'effortOverride.enabled'
+                : key;
             saving = true;
             setDisabled(true);
             try {
                 const response = await fetch('/api/settings', {
                     method: 'PATCH',
                     headers: { ...headers, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ key, value: requestedValue })
+                    body: JSON.stringify({ key: apiKey, value: requestedValue })
                 });
                 if (!response.ok) throw new Error('保存失败');
                 const { data } = await response.json();
@@ -181,6 +224,34 @@ const PAGE_SCRIPT = `
             }
         });
     }
+
+    // Effort 档位下拉：提交 effortOverride.level，保存期间禁用全部控件。
+    document.getElementById('effortOverrideLevel').addEventListener('change', async (event) => {
+        const select = event.currentTarget;
+        const requestedValue = select.value;
+        saving = true;
+        setDisabled(true);
+        try {
+            const response = await fetch('/api/settings', {
+                method: 'PATCH',
+                headers: { ...headers, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: 'effortOverride.level', value: requestedValue })
+            });
+            if (!response.ok) throw new Error('保存失败');
+            const { data } = await response.json();
+            acceptSettings(data);
+            show('设置已保存，将在下次启动会话生效');
+        } catch (error) {
+            if (authoritativeSnapshot) {
+                applySettings(authoritativeSnapshot);
+            }
+            show(error.message, true);
+        } finally {
+            saving = false;
+            // 仅在租约仍活跃时恢复启用；租约已断开则保持禁用。
+            setDisabled(!leaseActive);
+        }
+    });
 
     async function openLease() {
         const response = await fetch('/api/session', { headers });

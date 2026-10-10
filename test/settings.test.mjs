@@ -8,7 +8,8 @@ import { DEFAULT_CONFIG, defaultConfigPath, readConfig, writeConfig } from '../s
 const EXPECTED_DEFAULT_CONFIG = {
     thinkingWindow: { enabled: false, lines: 10 },
     forwardSuggestionMode: false,
-    thinkingAsText: true
+    thinkingAsText: true,
+    effortOverride: { enabled: true, level: 'high' }
 };
 
 function tmpDir(t) {
@@ -66,7 +67,8 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
     assert.deepEqual(readConfig(dir), {
         thinkingWindow: { enabled: true, lines: 25 },
         forwardSuggestionMode: true,
-        thinkingAsText: true
+        thinkingAsText: true,
+        effortOverride: { enabled: true, level: 'high' }
     });
 });
 
@@ -74,6 +76,68 @@ test('readConfig: explicit boolean false disables thinkingAsText', (t) => {
     const dir = tmpDir(t);
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ thinkingAsText: false }));
     assert.equal(readConfig(dir).thinkingAsText, false);
+});
+
+// ---------- effortOverride ----------
+
+test('readConfig: old config without effortOverride defaults it to enabled/high', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        thinkingWindow: { enabled: true, lines: 25 },
+        forwardSuggestionMode: true
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride, { enabled: true, level: 'high' });
+});
+
+test('readConfig: explicit effortOverride values persist', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: { enabled: false, level: 'low' }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride, { enabled: false, level: 'low' });
+});
+
+test('readConfig: invalid effortOverride fields fall back field-by-field', (t) => {
+    const dir = tmpDir(t);
+    for (const enabled of [null, 0, 1, 'false', []]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            effortOverride: { enabled, level: 'medium' }
+        }));
+        assert.equal(readConfig(dir).effortOverride.enabled, true, `enabled=${JSON.stringify(enabled)}`);
+    }
+    for (const level of [null, 0, 'extreme', 'HIGH', [], {}]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            effortOverride: { enabled: false, level }
+        }));
+        assert.equal(readConfig(dir).effortOverride.level, 'high', `level=${JSON.stringify(level)}`);
+    }
+});
+
+test('readConfig: non-object effortOverride falls back to defaults', (t) => {
+    const dir = tmpDir(t);
+    for (const effortOverride of [null, 'high', 7, ['low']]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ effortOverride }));
+        assert.deepEqual(readConfig(dir).effortOverride, { enabled: true, level: 'high' });
+    }
+});
+
+test('writeConfig: effortOverride partial merge keeps sibling field', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ effortOverride: { enabled: false, level: 'low' } }, dir);
+    const out = writeConfig({ effortOverride: { level: 'medium' } }, dir);
+    // 逐字段合并：只改 level 时 enabled 保留原值 false。
+    assert.equal(out.effortOverride.level, 'medium');
+    assert.equal(out.effortOverride.enabled, false);
+});
+
+test('writeConfig: effortOverride write keeps other top-level settings', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
+    const out = writeConfig({ effortOverride: { level: 'low' } }, dir);
+    // 防丢失：写 effortOverride 不得重置已保存的顶层开关。
+    assert.equal(out.forwardSuggestionMode, true);
+    assert.equal(out.thinkingAsText, false);
+    assert.deepEqual(out.effortOverride, { enabled: true, level: 'low' });
 });
 
 test('readConfig: invalid thinkingAsText values fall back to true', (t) => {
@@ -157,28 +221,40 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
     fs.writeFileSync(file, JSON.stringify({
         thinkingWindow: { enabled: true, lines: 30 },
         forwardSuggestionMode: true,
-        thinkingAsText: false
+        thinkingAsText: false,
+        effortOverride: { enabled: false, level: 'low' }
     }));
 
     let out = writeConfig({ thinkingWindow: { lines: 40 } }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: true,
-        thinkingAsText: false
+        thinkingAsText: false,
+        effortOverride: { enabled: false, level: 'low' }
     });
 
     out = writeConfig({ forwardSuggestionMode: false }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
-        thinkingAsText: false
+        thinkingAsText: false,
+        effortOverride: { enabled: false, level: 'low' }
     });
 
     out = writeConfig({ thinkingAsText: true }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
-        thinkingAsText: true
+        thinkingAsText: true,
+        effortOverride: { enabled: false, level: 'low' }
+    });
+
+    out = writeConfig({ effortOverride: { enabled: true, level: 'medium' } }, dir);
+    assert.deepEqual(out, {
+        thinkingWindow: { enabled: true, lines: 40 },
+        forwardSuggestionMode: false,
+        thinkingAsText: true,
+        effortOverride: { enabled: true, level: 'medium' }
     });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), out);
 });

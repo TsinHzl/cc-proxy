@@ -136,7 +136,8 @@ export function createProxyServer({
     usageTracker,
     debugLog,
     forwardSuggestionMode = false,
-    thinkingAsText = true
+    thinkingAsText = true,
+    effortOverride = null
 } = {}) {
     const usage = usageTracker ?? null;
     // 关闭态 debug-log 的方法为 null，归一为可调用的空实现，调用点无需判空。
@@ -162,6 +163,14 @@ export function createProxyServer({
                     const parsed = JSON.parse(bodyBuffer.toString('utf8'));
                     if (Array.isArray(parsed?.messages)) {
                         parsed.messages = stripThinkingTextHistory(parsed.messages);
+                        body = Buffer.from(JSON.stringify(parsed), 'utf8');
+                    }
+                    // Effort 覆写：开关开启时无论 CC 本地设置如何，均以配置档位
+                    // 覆盖 output_config.effort（CC 当前实际形态）并兜底覆写
+                    // top-level effort；仅在覆写生效时重序列化 body。
+                    if (effortOverride?.enabled) {
+                        parsed.output_config = { ...parsed.output_config, effort: effortOverride.level };
+                        parsed.effort = effortOverride.level;
                         body = Buffer.from(JSON.stringify(parsed), 'utf8');
                     }
                 } catch {

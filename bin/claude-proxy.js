@@ -67,12 +67,13 @@ export function main({
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
     const usageTracker = createUsageTracker();
-    const { forwardSuggestionMode, thinkingAsText } = readSettings();
+    const { forwardSuggestionMode, thinkingAsText, effortOverride } = readSettings();
     const server = createProxy({
         baseUrlEnv: originalBase,
         usageTracker,
         forwardSuggestionMode,
-        thinkingAsText
+        thinkingAsText,
+        effortOverride
     });
 
     server.listen(0, '127.0.0.1', () => {

@@ -70,7 +70,8 @@ test('normal startup injects both persisted proxy settings', () => {
         argv: ['node', BIN],
         readSettings: () => ({
             forwardSuggestionMode: true,
-            thinkingAsText: false
+            thinkingAsText: false,
+            effortOverride: { enabled: true, level: 'medium' }
         }),
         createProxy: (options) => {
             proxyOptions = options;
@@ -84,5 +85,6 @@ test('normal startup injects both persisted proxy settings', () => {
 
     assert.equal(proxyOptions.forwardSuggestionMode, true);
     assert.equal(proxyOptions.thinkingAsText, false);
+    assert.deepEqual(proxyOptions.effortOverride, { enabled: true, level: 'medium' });
     assert.equal(spawnOptions.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4321');
 });

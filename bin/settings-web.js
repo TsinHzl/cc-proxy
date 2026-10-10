@@ -15,7 +15,14 @@ const BODY_TIMEOUT_MS = 5_000;
 const MAX_TIMER_MS = 2_147_483_647;
 const BOOTSTRAP_NONCE_TTL_MS = 30_000;
 const MAX_BOOTSTRAP_NONCES = 256;
-const ALLOWED_KEYS = new Set(['forwardSuggestionMode', 'thinkingAsText']);
+const ALLOWED_KEYS = new Set([
+    'forwardSuggestionMode',
+    'thinkingAsText',
+    'effortOverride.enabled',
+    'effortOverride.level'
+]);
+// effort 档位枚举单点定义（与 src/settings.js 的 EFFORT_LEVELS 保持一致）。
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high']);
 
 function tokenMatches(actual, expected) {
     if (typeof actual !== 'string') return false;
@@ -45,7 +52,8 @@ function sendJson(res, status, payload, extra = {}, onFlushed) {
 function publicSettings(config) {
     return {
         forwardSuggestionMode: config.forwardSuggestionMode,
-        thinkingAsText: config.thinkingAsText
+        thinkingAsText: config.thinkingAsText,
+        effortOverride: config.effortOverride
     };
 }
 
@@ -284,13 +292,15 @@ async function handleSessionRequest(context, req, res, url) {
     return true;
 }
 
+// 点号 key（effortOverride.enabled / effortOverride.level）按 key 分流校验
+// value 类型；顶层布尔 key 维持原有布尔校验。
 function isValidSettingsPatch(body) {
-    return body
-        && typeof body === 'object'
-        && !Array.isArray(body)
-        && Object.keys(body).length === 2
-        && ALLOWED_KEYS.has(body.key)
-        && typeof body.value === 'boolean';
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    if (Object.keys(body).length !== 2 || !ALLOWED_KEYS.has(body.key)) return false;
+    if (body.key === 'effortOverride.level') {
+        return EFFORT_LEVELS.has(body.value);
+    }
+    return typeof body.value === 'boolean';
 }
 
 function hasJsonContentType(req) {
@@ -333,9 +343,13 @@ async function handleSettingsPatch(context, req, res, host) {
     }
 
     try {
-        const config = await context.write({
-            [body.key]: body.value
-        });
+        // 点号 key 展开为嵌套 partial（{ effortOverride: { level: value } }），
+        // 顶层 key 直接映射，writeConfig 逐字段合并保留未提交字段。
+        const [group, leaf] = body.key.split('.');
+        const patch = leaf
+            ? { [group]: { [leaf]: body.value } }
+            : { [body.key]: body.value };
+        const config = await context.write(patch);
         sendJson(res, 200, {
             ok: true,
             data: publicSettings(config)

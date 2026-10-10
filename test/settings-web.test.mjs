@@ -16,14 +16,19 @@ import {
     SESSION_TIMING
 } from '../bin/settings-web.js';
 
-test('page: renders dark settings page with exactly two switches', () => {
+test('page: renders dark settings page with exactly three switches', () => {
     const html = renderSettingsPage();
     const switches = html.match(/<input[^>]+type="checkbox"/g) ?? [];
 
     assert.match(html, /<title>cc-proxy 设置<\/title>/);
-    assert.equal(switches.length, 2);
+    assert.equal(switches.length, 3);
     assert.match(html, /id="forwardSuggestionMode"/);
     assert.match(html, /id="thinkingAsText"/);
+    assert.match(html, /id="effortOverrideEnabled"/);
+    assert.match(html, /id="effortOverrideLevel"/);
+    assert.match(html, /<option value="low">/);
+    assert.match(html, /<option value="medium">/);
+    assert.match(html, /<option value="high">/);
     assert.match(html, /--page-bg:\s*#090a0c/);
     assert.match(html, /--card-bg:\s*#15171b/);
     assert.match(html, /--accent:\s*#2bbbad/);
@@ -36,6 +41,8 @@ test('page: explains suggestion forwarding and thinking text behavior', () => {
     assert.match(html, /额外消耗 token/);
     assert.match(html, /思考内容文本化展示/);
     assert.match(html, /恢复 Claude Code 原生折叠 Thinking 块/);
+    assert.match(html, /Effort 覆写/);
+    assert.match(html, /无论 Claude Code 本地 effort 设置是什么/);
     assert.match(html, /下次启动会话生效/);
 });
 
@@ -75,6 +82,7 @@ function createPageElement({ disabled = false } = {}) {
     return {
         checked: false,
         disabled,
+        value: '',
         textContent: '',
         classList: {
             toggle(name, force) {
@@ -88,7 +96,7 @@ function createPageElement({ disabled = false } = {}) {
             listeners.set(type, listener);
         },
         async dispatch(type) {
-            await listeners.get(type)?.({ type, target: this });
+            await listeners.get(type)?.({ type, target: this, currentTarget: this });
         }
     };
 }
@@ -104,6 +112,9 @@ function createPageHarness(fetchHandler) {
     const inputTag = (id) => html.match(
         new RegExp(`<input[^>]+id="${id}"[^>]*>`, 'i')
     )?.[0] ?? '';
+    const selectTag = (id) => html.match(
+        new RegExp(`<select[^>]+id="${id}"[^>]*>`, 'i')
+    )?.[0] ?? '';
     const elements = {
         forwardSuggestionMode: createPageElement({
             disabled: /\bdisabled\b/i.test(
@@ -112,6 +123,16 @@ function createPageHarness(fetchHandler) {
         }),
         thinkingAsText: createPageElement({
             disabled: /\bdisabled\b/i.test(inputTag('thinkingAsText'))
+        }),
+        effortOverrideEnabled: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                inputTag('effortOverrideEnabled')
+            )
+        }),
+        effortOverrideLevel: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                selectTag('effortOverrideLevel')
+            )
         }),
         status: createPageElement()
     };
@@ -207,15 +228,20 @@ test('page script: waits for bootstrap and initial load before enabling switches
         ok: true,
         data: {
             forwardSuggestionMode: false,
-            thinkingAsText: true
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' }
         }
     }));
     await flushPageMicrotasks();
 
     assert.equal(page.elements.forwardSuggestionMode.checked, false);
     assert.equal(page.elements.thinkingAsText.checked, true);
+    assert.equal(page.elements.effortOverrideEnabled.checked, true);
+    assert.equal(page.elements.effortOverrideLevel.value, 'high');
     assert.equal(page.elements.forwardSuggestionMode.disabled, false);
     assert.equal(page.elements.thinkingAsText.disabled, false);
+    assert.equal(page.elements.effortOverrideEnabled.disabled, false);
+    assert.equal(page.elements.effortOverrideLevel.disabled, false);
 });
 
 test('page script: PATCH uses authoritative data and failed save can retry', async () => {
@@ -237,7 +263,8 @@ test('page script: PATCH uses authoritative data and failed save can retry', asy
             ok: true,
             data: {
                 forwardSuggestionMode: false,
-                thinkingAsText: true
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' }
             }
         });
     });
@@ -246,11 +273,14 @@ test('page script: PATCH uses authoritative data and failed save can retry', asy
     const firstSave = page.change('forwardSuggestionMode', true);
     assert.equal(page.elements.forwardSuggestionMode.disabled, true);
     assert.equal(page.elements.thinkingAsText.disabled, true);
+    assert.equal(page.elements.effortOverrideEnabled.disabled, true);
+    assert.equal(page.elements.effortOverrideLevel.disabled, true);
     patchResponses[0].resolve(pageJsonResponse(200, {
         ok: true,
         data: {
             forwardSuggestionMode: false,
-            thinkingAsText: false
+            thinkingAsText: false,
+            effortOverride: { enabled: true, level: 'high' }
         }
     }));
     await firstSave;
@@ -274,12 +304,15 @@ test('page script: PATCH uses authoritative data and failed save can retry', asy
         ok: true,
         data: {
             forwardSuggestionMode: true,
-            thinkingAsText: true
+            thinkingAsText: true,
+            effortOverride: { enabled: false, level: 'low' }
         }
     }));
     await retry;
     assert.equal(page.elements.forwardSuggestionMode.checked, true);
     assert.equal(page.elements.thinkingAsText.checked, true);
+    assert.equal(page.elements.effortOverrideEnabled.checked, false);
+    assert.equal(page.elements.effortOverrideLevel.value, 'low');
 });
 
 test('page script: bootstrap failure reloads once then errors on retry', async (t) => {
@@ -358,13 +391,16 @@ test('page script: session failure or disconnect keeps switches disabled', async
             ok: true,
             data: {
                 forwardSuggestionMode: false,
-                thinkingAsText: true
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' }
             }
         }));
         await flushPageMicrotasks();
 
         assert.equal(page.elements.forwardSuggestionMode.disabled, true);
         assert.equal(page.elements.thinkingAsText.disabled, true);
+        assert.equal(page.elements.effortOverrideEnabled.disabled, true);
+        assert.equal(page.elements.effortOverrideLevel.disabled, true);
         assert.equal(page.elements.status.textContent, '设置页面连接失败');
     });
 
@@ -382,7 +418,8 @@ test('page script: session failure or disconnect keeps switches disabled', async
                 ok: true,
                 data: {
                     forwardSuggestionMode: false,
-                    thinkingAsText: true
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' }
                 }
             });
         });
@@ -413,7 +450,8 @@ test('page script: session failure or disconnect keeps switches disabled', async
                 ok: true,
                 data: {
                     forwardSuggestionMode: false,
-                    thinkingAsText: true
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' }
                 }
             });
         });
@@ -905,7 +943,8 @@ test(
         assert.equal(initial.status, 200);
         assert.deepEqual((await initial.json()).data, {
             forwardSuggestionMode: false,
-            thinkingAsText: true
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' }
         });
 
         const updated = await fetch(`${origin}/api/settings`, {
@@ -923,7 +962,8 @@ test(
         assert.equal(updated.status, 200);
         assert.deepEqual((await updated.json()).data, {
             forwardSuggestionMode: true,
-            thinkingAsText: true
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' }
         });
 
         const configFile = path.join(envDir, 'config.json');
@@ -932,7 +972,8 @@ test(
             {
                 thinkingWindow: { enabled: false, lines: 10 },
                 forwardSuggestionMode: true,
-                thinkingAsText: true
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' }
             }
         );
         assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
@@ -1137,6 +1178,113 @@ test('API: PATCH writes one boolean setting', async (t) => {
         ok: true,
         data: { forwardSuggestionMode: true, thinkingAsText: true }
     });
+});
+
+test('API: PATCH effortOverride.enabled merges nested partial', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' }
+        }),
+        write: (partial) => {
+            update = partial;
+            return {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: false, level: 'high' }
+            };
+        }
+    });
+    t.after(api.close);
+
+    const response = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, {
+            Origin: api.origin,
+            'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify({ key: 'effortOverride.enabled', value: false })
+    });
+    assert.equal(response.status, 200);
+    // 点号 key 展开为嵌套 partial，writeConfig 逐字段合并保留 level。
+    assert.deepEqual(update, { effortOverride: { enabled: false } });
+    assert.deepEqual(await response.json(), {
+        ok: true,
+        data: {
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            effortOverride: { enabled: false, level: 'high' }
+        }
+    });
+});
+
+test('API: PATCH effortOverride.level writes level and keeps enabled', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            effortOverride: { enabled: false, level: 'high' }
+        }),
+        write: (partial) => {
+            update = partial;
+            return {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: false, level: 'medium' }
+            };
+        }
+    });
+    t.after(api.close);
+
+    const response = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, {
+            Origin: api.origin,
+            'Content-Type': 'application/json'
+        }),
+        body: JSON.stringify({ key: 'effortOverride.level', value: 'medium' })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(update, { effortOverride: { level: 'medium' } });
+    assert.deepEqual((await response.json()).data.effortOverride, {
+        enabled: false,
+        level: 'medium'
+    });
+});
+
+test('API: rejects invalid effortOverride patches without writes', async (t) => {
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' }
+        }),
+        write: () => { writes += 1; }
+    });
+    t.after(api.close);
+
+    for (const body of [
+        // level 非法档位（含大小写敏感）与非字符串值。
+        JSON.stringify({ key: 'effortOverride.level', value: 'extreme' }),
+        JSON.stringify({ key: 'effortOverride.level', value: 'HIGH' }),
+        JSON.stringify({ key: 'effortOverride.level', value: 2 }),
+        JSON.stringify({ key: 'effortOverride.level', value: null }),
+        // enabled 非布尔值。
+        JSON.stringify({ key: 'effortOverride.enabled', value: 'false' }),
+        JSON.stringify({ key: 'effortOverride.enabled', value: 1 })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, 0);
 });
 
 test('API: rejects invalid token, Host and Origin without writes', async (t) => {
