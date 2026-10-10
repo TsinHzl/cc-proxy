@@ -1,0 +1,25 @@
+bin/settings-page.js
+  727a034631d893bc 273-276,279-294
+test/settings-web.test.mjs
+  727a034631d893bc 115-117,506-635
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "721af1b14a10cfbc8774ed273411ac30207d8376",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 184,
+      "total_deletions": 30,
+      "accepted_lines": 161,
+      "overriden_lines": 0
+    }
+  }
+}
