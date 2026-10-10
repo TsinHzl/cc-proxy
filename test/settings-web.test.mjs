@@ -113,7 +113,7 @@ function createPageElement({ disabled = false } = {}) {
 
 async function flushPageMicrotasks() {
     // 24 轮：覆盖 bootstrap → load → session → captured 预填的最长微任务链
-    //（实测约 21 轮，留一倍余量）。
+    //（实测约 21 轮，超出原 12 轮一倍，留 3 轮余量）。
     for (let index = 0; index < 24; index += 1) {
         await Promise.resolve();
     }

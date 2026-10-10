@@ -270,27 +270,42 @@ const PAGE_SCRIPT = `
         if (!response.ok) throw new Error('读取设置失败');
         const { data } = await response.json();
         acceptSettings(data);
-        // 初次加载后预填：输入框为空且代理已捕获 CC 默认系统提示词时展示
-        // 在输入框内（与开关状态无关，用户可直接修改）；无捕获数据保持为空。
-        // 串行在 acceptSettings 之后，避免与权威快照回填竞争。
+        // 初次加载预填：串行在 acceptSettings 之后，避免与权威快照回填竞争。
         await prefillCapturedPrompt();
     }
 
-    // 页面加载即预填：输入框为空且代理已捕获 CC 默认系统提示词时展示在
-    // 输入框内（与开关状态无关，用户可直接修改）；无捕获数据保持为空。
-    async function prefillCapturedPrompt() {
-        if (document.getElementById('systemPromptOverridePrompt').value) return;
+    // 拉取捕获的 CC 默认系统提示词：无捕获数据或失败时返回 null。
+    async function fetchCapturedPrompt() {
         try {
             const captured = await fetch('/api/captured-system-prompt', { headers });
-            if (!captured.ok) return;
+            if (!captured.ok) return null;
             const { data } = await captured.json();
-            if (!data?.prompt) return;
-            const textarea = document.getElementById('systemPromptOverridePrompt');
-            // 拉取期间用户可能已输入：仅当仍为空时填入，不覆盖用户内容。
-            if (textarea.value) return;
-            textarea.value = data.prompt;
+            return data?.prompt ?? null;
         } catch {
-            // 预填失败静默忽略，不阻断页面初始化。
+            return null;
+        }
+    }
+
+    // 预填进行中标志：互斥 load 预填与开关开启预填两条并发链路。
+    let prefilling = false;
+
+    // 预填入口：输入框为空且代理已捕获 CC 默认提示词时展示在输入框内
+    //（与开关状态无关，用户可直接修改；无捕获数据保持为空）。
+    // persist 为 true 时同步 PATCH prompt（开关开启路径），保证展示与生效一致。
+    async function prefillCapturedPrompt(persist = false) {
+        const textarea = document.getElementById('systemPromptOverridePrompt');
+        try {
+            if (!textarea || textarea.value || prefilling) return;
+            prefilling = true;
+            const prompt = await fetchCapturedPrompt();
+            // 拉取期间用户可能已输入：仅当仍为空时填入，不覆盖用户内容。
+            if (!prompt || textarea.value) return;
+            textarea.value = prompt;
+            if (persist) await patchSetting('systemPromptOverride.prompt', prompt);
+        } catch {
+            // 预填失败静默忽略，不阻断页面初始化或开关保存。
+        } finally {
+            prefilling = false;
         }
     }
 
@@ -307,23 +322,11 @@ const PAGE_SCRIPT = `
             saving = true;
             setDisabled(true);
             try {
-                // 系统提示词开关首次开启且输入框为空：先拉取捕获的 CC 默认
-                // 提示词预填并提交 prompt，再提交 enabled（保证首次开启即
-                // 带着预填内容生效；无捕获数据时保持为空继续保存）。
-                if (key === 'systemPromptOverrideEnabled' && requestedValue
-                    && !document.getElementById('systemPromptOverridePrompt').value) {
-                    try {
-                        const captured = await fetch('/api/captured-system-prompt', { headers });
-                        if (captured.ok) {
-                            const { data } = await captured.json();
-                            if (data?.prompt) {
-                                document.getElementById('systemPromptOverridePrompt').value = data.prompt;
-                                await patchSetting('systemPromptOverride.prompt', data.prompt);
-                            }
-                        }
-                    } catch {
-                        // 预填失败不阻断开关保存。
-                    }
+                // 系统提示词开关开启且输入框为空：预填捕获的 CC 默认提示词并
+                // 同步 PATCH prompt（persist=true），再提交 enabled——保证首次
+                // 开启即带着预填内容生效，展示与生效一致。
+                if (key === 'systemPromptOverrideEnabled' && requestedValue) {
+                    await prefillCapturedPrompt(true);
                 }
                 await patchSetting(apiKey, requestedValue);
                 show('设置已保存，将在下次启动会话生效');
