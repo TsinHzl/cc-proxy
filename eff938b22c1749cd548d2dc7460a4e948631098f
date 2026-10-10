@@ -1,0 +1,51 @@
+bin/settings-page.js
+  727a034631d893bc 1-228
+openspec/specs/cc-proxy-settings/spec.md
+  727a034631d893bc 2
+README.md
+  727a034631d893bc 99,101-102,104,106,108-109,112,114,120,157,165-167
+test/settings.test.mjs
+  727a034631d893bc 8-13,22,29,57,60-88,101-121,154-229,234-235
+bin/settings-session.js
+  727a034631d893bc 1-221
+test/settings-cli.test.mjs
+  727a034631d893bc 34,42
+src/settings.js
+  727a034631d893bc 6,12-14,30-31,33,35,44-46,67,72-77,79-103
+test/thinking-text.test.mjs
+  727a034631d893bc 406-440,522-558
+bin/claude-proxy.js
+  727a034631d893bc 5,7,10,15,31-54,56,64,70-76,82,107-114
+bin/settings-web.js
+  727a034631d893bc 1-600
+openspec/config.yaml
+  727a034631d893bc 16-17
+openspec/project.md
+  727a034631d893bc 9,11,16-17,19,22
+src/proxy.js
+  727a034631d893bc 65,72,134-139,215-218,241
+test/settings-web.test.mjs
+  727a034631d893bc 1-2244
+test/cli.test.mjs
+  727a034631d893bc 4-6,9,24-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "eff938b22c1749cd548d2dc7460a4e948631098f",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 5160,
+      "total_deletions": 1185,
+      "accepted_lines": 4052,
+      "overriden_lines": 0
+    }
+  }
+}
