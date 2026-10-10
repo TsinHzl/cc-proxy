@@ -112,7 +112,9 @@ function createPageElement({ disabled = false } = {}) {
 }
 
 async function flushPageMicrotasks() {
-    for (let index = 0; index < 12; index += 1) {
+    // 24 轮：覆盖 bootstrap → load → session → captured 预填的最长微任务链
+    //（实测约 21 轮，留一倍余量）。
+    for (let index = 0; index < 24; index += 1) {
         await Promise.resolve();
     }
 }
@@ -498,6 +500,136 @@ test('page script: session failure or disconnect keeps switches disabled', async
             page.elements.status.textContent,
             '设置页面连接已断开'
         );
+    });
+});
+
+test('page script: prefills captured prompt on load when textarea is empty', async (t) => {
+    await t.test('fills captured prompt regardless of switch state', async () => {
+        const page = createPageHarness(({ url }) => {
+            if (url === '/api/bootstrap') {
+                return pageJsonResponse(200, {
+                    ok: true,
+                    data: { token: 'vm-token' }
+                });
+            }
+            if (url === '/api/captured-system-prompt') {
+                return pageJsonResponse(200, {
+                    ok: true,
+                    data: { prompt: 'CC 默认系统提示词' }
+                });
+            }
+            if (url === '/api/session') return pageSessionResponse();
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' }
+                }
+            });
+        });
+        await flushPageMicrotasks();
+
+        // 开关关闭态下输入框仍展示捕获的 CC 默认提示词。
+        assert.equal(page.elements.systemPromptOverridePrompt.value, 'CC 默认系统提示词');
+        assert.equal(page.elements.systemPromptOverrideEnabled.checked, false);
+        // 加载路径无 PATCH 调用（仅展示，不提交）。
+        assert.equal(
+            page.calls.filter(({ options }) => options.method === 'PATCH').length,
+            0
+        );
+    });
+
+    await t.test('keeps empty when no captured data', async () => {
+        const page = createPageHarness(({ url }) => {
+            if (url === '/api/bootstrap') {
+                return pageJsonResponse(200, {
+                    ok: true,
+                    data: { token: 'vm-token' }
+                });
+            }
+            if (url === '/api/captured-system-prompt') {
+                return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+            }
+            if (url === '/api/session') return pageSessionResponse();
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' }
+                }
+            });
+        });
+        await flushPageMicrotasks();
+
+        assert.equal(page.elements.systemPromptOverridePrompt.value, '');
+    });
+
+    await t.test('does not overwrite user input typed during prefill', async () => {
+        // captured 响应挂起：用户在预填拉取期间输入，填入不得覆盖用户内容。
+        const captured = createPageDeferred();
+        const page = createPageHarness(({ url }) => {
+            if (url === '/api/bootstrap') {
+                return pageJsonResponse(200, {
+                    ok: true,
+                    data: { token: 'vm-token' }
+                });
+            }
+            if (url === '/api/captured-system-prompt') return captured.promise;
+            if (url === '/api/session') return pageSessionResponse();
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' }
+                }
+            });
+        });
+        await flushPageMicrotasks();
+        // 预填拉取已在飞：模拟用户输入后捕获响应才返回。
+        page.elements.systemPromptOverridePrompt.value = '用户自己的内容';
+        captured.resolve(pageJsonResponse(200, {
+            ok: true,
+            data: { prompt: 'CC 默认系统提示词' }
+        }));
+        await flushPageMicrotasks();
+
+        assert.equal(page.elements.systemPromptOverridePrompt.value, '用户自己的内容');
+    });
+
+    await t.test('prefill failure does not block initialization', async () => {
+        const page = createPageHarness(({ url }) => {
+            if (url === '/api/bootstrap') {
+                return pageJsonResponse(200, {
+                    ok: true,
+                    data: { token: 'vm-token' }
+                });
+            }
+            if (url === '/api/captured-system-prompt') {
+                return pageJsonResponse(500, { ok: false, error: '读取失败' });
+            }
+            if (url === '/api/session') return pageSessionResponse();
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' }
+                }
+            });
+        });
+        await flushPageMicrotasks();
+
+        // 页面照常可用（控件已启用），输入框保持为空。
+        assert.equal(page.elements.forwardSuggestionMode.disabled, false);
+        assert.equal(page.elements.systemPromptOverridePrompt.disabled, false);
+        assert.equal(page.elements.systemPromptOverridePrompt.value, '');
     });
 });
 

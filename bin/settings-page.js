@@ -270,6 +270,28 @@ const PAGE_SCRIPT = `
         if (!response.ok) throw new Error('读取设置失败');
         const { data } = await response.json();
         acceptSettings(data);
+        // 初次加载后预填：输入框为空且代理已捕获 CC 默认系统提示词时展示
+        // 在输入框内（与开关状态无关，用户可直接修改）；无捕获数据保持为空。
+        // 串行在 acceptSettings 之后，避免与权威快照回填竞争。
+        await prefillCapturedPrompt();
+    }
+
+    // 页面加载即预填：输入框为空且代理已捕获 CC 默认系统提示词时展示在
+    // 输入框内（与开关状态无关，用户可直接修改）；无捕获数据保持为空。
+    async function prefillCapturedPrompt() {
+        if (document.getElementById('systemPromptOverridePrompt').value) return;
+        try {
+            const captured = await fetch('/api/captured-system-prompt', { headers });
+            if (!captured.ok) return;
+            const { data } = await captured.json();
+            if (!data?.prompt) return;
+            const textarea = document.getElementById('systemPromptOverridePrompt');
+            // 拉取期间用户可能已输入：仅当仍为空时填入，不覆盖用户内容。
+            if (textarea.value) return;
+            textarea.value = data.prompt;
+        } catch {
+            // 预填失败静默忽略，不阻断页面初始化。
+        }
     }
 
     for (const key of switchFields) {
