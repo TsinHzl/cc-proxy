@@ -1,0 +1,41 @@
+bin/settings-page.js
+  727a034631d893bc 45-55,94-108,125-128,133,139-143,145-146,150-157,195,199-202,209,228-255
+src/settings.js
+  727a034631d893bc 14-17,22,30-31,36-37,47-50,71-73,81
+test/settings-web.test.mjs
+  727a034631d893bc 19,24,27-31,44-45,85,99,115-117,127-135,231-232,239-240,243-244,266-267,276-277,282-283,307-308,314-315,394-395,402-403,421-422,453-454,946-947,965-966,975-976,1183-1289
+bin/claude-proxy.js
+  727a034631d893bc 70,75-76
+test/settings.test.mjs
+  727a034631d893bc 11-12,70-71,81-142,224-225,232-233,240-241,248-257
+bin/settings-web.js
+  727a034631d893bc 18-25,55-56,295-296,298-303,346-352
+test/cli.test.mjs
+  727a034631d893bc 73-74,88
+test/proxy-effort.test.mjs
+  727a034631d893bc 1-145
+test/settings-cli.test.mjs
+  727a034631d893bc 34,42
+src/proxy.js
+  727a034631d893bc 139-140,168-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "5a543dda4ea332cba031cdadb5384413edfe9a09",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 648,
+      "total_deletions": 62,
+      "accepted_lines": 636,
+      "overriden_lines": 0
+    }
+  }
+}
