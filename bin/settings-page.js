@@ -106,6 +106,7 @@ const PAGE_BODY = `
                 <option value="high">high</option>
                 <option value="xhigh">xhigh</option>
                 <option value="max">max</option>
+                <option value="ultracode">ultracode</option>
             </select>
         </div>
     </section>

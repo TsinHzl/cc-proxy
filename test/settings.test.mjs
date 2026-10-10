@@ -111,8 +111,8 @@ test('readConfig: invalid effortOverride fields fall back field-by-field', (t) =
         }));
         assert.equal(readConfig(dir).effortOverride.level, 'high', `level=${JSON.stringify(level)}`);
     }
-    // 新增档位 xhigh / max 为合法值，不被回退。
-    for (const level of ['xhigh', 'max']) {
+    // 新增档位 xhigh / max / ultracode 为合法值，不被回退。
+    for (const level of ['xhigh', 'max', 'ultracode']) {
         fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
             effortOverride: { enabled: false, level }
         }));

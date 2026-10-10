@@ -1252,8 +1252,8 @@ test('API: PATCH effortOverride.level writes level and keeps enabled', async (t)
     assert.equal(response.status, 200);
     assert.deepEqual(update, { effortOverride: { level: 'medium' } });
 
-    // 新增档位 xhigh / max 同样接受 PATCH。
-    for (const level of ['xhigh', 'max']) {
+    // 新增档位 xhigh / max / ultracode 同样接受 PATCH。
+    for (const level of ['xhigh', 'max', 'ultracode']) {
         const res = await fetch(`${api.origin}/api/settings`, {
             method: 'PATCH',
             headers: authHeaders(api, {
