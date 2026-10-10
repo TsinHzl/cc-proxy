@@ -22,7 +22,7 @@ const ALLOWED_KEYS = new Set([
     'effortOverride.level'
 ]);
 // effort 档位枚举单点定义（与 src/settings.js 的 EFFORT_LEVELS 保持一致）。
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high']);
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function tokenMatches(actual, expected) {
     if (typeof actual !== 'string') return false;

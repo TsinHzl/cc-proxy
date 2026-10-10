@@ -19,7 +19,7 @@ export const DEFAULT_CONFIG = Object.freeze({
 
 const MIN_LINES = 1;
 const MAX_LINES = 100;
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high']);
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 // 供 settings-cli 显示与 e2e 断言的默认落盘路径。
 export function defaultConfigPath() {

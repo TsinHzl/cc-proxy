@@ -29,6 +29,8 @@ test('page: renders dark settings page with exactly three switches', () => {
     assert.match(html, /<option value="low">/);
     assert.match(html, /<option value="medium">/);
     assert.match(html, /<option value="high">/);
+    assert.match(html, /<option value="xhigh">/);
+    assert.match(html, /<option value="max">/);
     assert.match(html, /--page-bg:\s*#090a0c/);
     assert.match(html, /--card-bg:\s*#15171b/);
     assert.match(html, /--accent:\s*#2bbbad/);
@@ -1249,6 +1251,21 @@ test('API: PATCH effortOverride.level writes level and keeps enabled', async (t)
     });
     assert.equal(response.status, 200);
     assert.deepEqual(update, { effortOverride: { level: 'medium' } });
+
+    // 新增档位 xhigh / max 同样接受 PATCH。
+    for (const level of ['xhigh', 'max']) {
+        const res = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, {
+                Origin: api.origin,
+                'Content-Type': 'application/json'
+            }),
+            body: JSON.stringify({ key: 'effortOverride.level', value: level })
+        });
+        assert.equal(res.status, 200, `level=${level}`);
+        assert.deepEqual(update, { effortOverride: { level } });
+    }
+
     assert.deepEqual((await response.json()).data.effortOverride, {
         enabled: false,
         level: 'medium'
