@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { runSettingsMenu } from '../bin/settings-cli.js';
 import { readConfig, writeConfig } from '../src/settings.js';
 
@@ -33,7 +31,7 @@ async function driveMenu(t, dir, keys) {
 test('settings menu: shows config path and exits without changes (esc)', async (t) => {
     const dir = tmpDir(t);
     const { config, output } = await driveMenu(t, dir, ['esc']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true });
     assert.match(output, /配置文件: .*config\.json/);
     assert.match(output, /已退出/);
 });
@@ -41,7 +39,7 @@ test('settings menu: shows config path and exits without changes (esc)', async (
 test('settings menu: enter also exits without changes', async (t) => {
     const dir = tmpDir(t);
     const { config } = await driveMenu(t, dir, ['enter']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true });
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false, 'no config written');
 });
 
@@ -62,33 +60,4 @@ test('settings menu: key 1 toggles off state confirmation when starting from on'
     assert.equal(config.forwardSuggestionMode, false);
     assert.match(output, /设置已保存：Suggestion Mode 输入建议转发 → 关/);
     assert.equal(readConfig(dir).forwardSuggestionMode, false);
-});
-
-// ---------- e2e 冒烟：--setting 管道喂入 → 不触碰真实配置 ----------
-
-function repoRoot() {
-    return path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-}
-
-function runCli(args, env, input) {
-    return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [path.join(repoRoot(), 'bin/claude-proxy.js'), ...args], {
-            env: { ...process.env, ...env },
-            stdio: ['pipe', 'pipe', 'pipe']
-        });
-        let out = '';
-        child.stdout.on('data', (c) => { out += c; });
-        child.stderr.on('data', (c) => { out += c; });
-        child.stdin.write(input);
-        child.stdin.end();
-        child.on('error', reject);
-        child.on('exit', (code) => resolve({ code, out }));
-    });
-}
-
-test('e2e: cc-proxy --setting exits cleanly and writes nothing to CC_PROXY_CONFIG_DIR', async (t) => {
-    const dir = tmpDir(t);
-    const { code } = await runCli(['--setting'], { CC_PROXY_CONFIG_DIR: dir }, 'esc\n');
-    assert.equal(code, 0);
-    assert.equal(fs.existsSync(path.join(dir, 'config.json')), false);
 });

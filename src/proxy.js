@@ -62,13 +62,14 @@ function writeEvent(res, data) {
 
 // Non-streaming JSON responses: convert thinking content blocks to rendered
 // dim-blockquote text blocks (signatures stripped), CC UA only.
-function transformNonStreamingResponse(body) {
+function transformNonStreamingResponse(body, thinkingAsText) {
     let parsed;
     try {
         parsed = JSON.parse(body.toString('utf8'));
     } catch {
         return { body, usage: null };
     }
+    if (!thinkingAsText) return { body, usage: extractUsage(parsed?.usage) };
     if (parsed?.type !== 'message' || !Array.isArray(parsed.content)) {
         return { body, usage: extractUsage(parsed?.usage) };
     }
@@ -130,7 +131,13 @@ function createEventIterator(upstreamRes) {
     };
 }
 
-export function createProxyServer({ baseUrlEnv, usageTracker, debugLog, forwardSuggestionMode = false } = {}) {
+export function createProxyServer({
+    baseUrlEnv,
+    usageTracker,
+    debugLog,
+    forwardSuggestionMode = false,
+    thinkingAsText = true
+} = {}) {
     const usage = usageTracker ?? null;
     // 关闭态 debug-log 的方法为 null，归一为可调用的空实现，调用点无需判空。
     const rawDbg = debugLog ?? createDebugLog(); // 默认关闭：零开销空实现
@@ -205,7 +212,10 @@ export function createProxyServer({ baseUrlEnv, usageTracker, debugLog, forwardS
                     upstreamRes.on('data', (c) => bodyChunks.push(c));
                     upstreamRes.on('error', () => { if (!res.headersSent) res.end(); });
                     upstreamRes.on('end', () => {
-                        const { body: out, usage: respUsage } = transformNonStreamingResponse(Buffer.concat(bodyChunks));
+                        const { body: out, usage: respUsage } = transformNonStreamingResponse(
+                            Buffer.concat(bodyChunks),
+                            thinkingAsText
+                        );
                         const headers = { ...upstreamRes.headers };
                         // Body is re-framed: drop the upstream chunked framing,
                         // otherwise content-length conflicts with it.
@@ -228,7 +238,7 @@ export function createProxyServer({ baseUrlEnv, usageTracker, debugLog, forwardS
                 void (async () => {
                     try {
                         const collected = [];
-                        for await (const event of transformThinkingAsTextEvents(events, { thinkingAsText: true })) {
+                        for await (const event of transformThinkingAsTextEvents(events, { thinkingAsText })) {
                             if (usage || logStream) {
                                 // message_start/message_delta 之外的样本不参与统计，仅必要时保留以省内存。
                                 if (event.type === 'message_start' || event.type === 'message_delta') collected.push(event);

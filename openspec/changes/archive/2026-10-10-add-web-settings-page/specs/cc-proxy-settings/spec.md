@@ -1,7 +1,4 @@
-## Purpose
-cc-proxy 的设置能力：提供 `cc-proxy --setting` 启动的本地 Web 设置页（深色分组卡片、两个即时保存开关）与 `~/.cc-proxy/config.json` 持久化配置读写（容错回退）。设置页仅监听 127.0.0.1，通过一次性 Bootstrap nonce 兑换 API token，并以 SSE 租约管理页面生命周期。「思考滚动窗口」实验特性因与 Claude Code Ink 渲染器不兼容（ANSI 光标控制码导致流式输出失效）已整体退役。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 配置持久化与容错
 The system SHALL 将设置持久化到 `~/.cc-proxy/config.json`，默认配置 SHALL 包含 `thinkingWindow: { enabled: false, lines: 10 }`、`forwardSuggestionMode: false` 与 `thinkingAsText: true`；配置文件缺失、损坏或字段非法时 SHALL 对相应字段回退默认值，不得抛出异常或中断启动。

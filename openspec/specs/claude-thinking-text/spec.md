@@ -6,24 +6,29 @@ cc-proxy 本地透明代理为 Claude Code 客户端提供深度思考文本化�
 ## Requirements
 
 ### Requirement: thinking 块文本化渲染
-代理 SHALL 在响应为 SSE 且客户端 UA 匹配 `/^(?:claude-cli|claude-code)(?:\/|\s|$)/i` 时，将流中的 thinking 内容块转换为 text 内容块：首 delta 为 header 行 `> \x1b[2m💭 Thinking\x1b[0m`，后续每行为 `\n> \x1b[2m<line>\x1b[0m`。
+代理 SHALL 在 `thinkingAsText=true`、响应为 SSE 且客户端 UA 匹配 `/^(?:claude-cli|claude-code)(?:\/|\s|$)/i` 时，将流中的 thinking 内容块转换为 text 内容块：首 delta 为 header 行 `> \x1b[2m💭 Thinking\x1b[0m`，后续每行为 `\n> \x1b[2m<line>\x1b[0m`；`thinkingAsText=false` 时 SHALL 保留原生 thinking 事件语义。
+
+#### Scenario: 文本化模式
+- **GIVEN** `thinkingAsText=true`
+- **WHEN** 上游发出 thinking content_block_start、thinking_delta、signature_delta 与 content_block_stop
+- **THEN** 客户端收到同 index 的 text content_block_start、header 与逐行 text_delta、content_block_stop
+- **AND** signature_delta 不转发给客户端
+
+#### Scenario: 原生思考模式
+- **GIVEN** `thinkingAsText=false`
+- **WHEN** 上游发出 thinking content_block_start、thinking_delta、signature_delta 与 content_block_stop
+- **THEN** 客户端收到相同类型、顺序、index 和内容的事件
+- **AND** Claude Code 可使用原生折叠 thinking 展示
 
 #### Scenario: 非 thinking 事件原样透传
-- **WHEN** 流中出现 `message_start`、`message_delta`（含 usage/output_tokens）、`ping`、`content_block_start/stop`（text/tool_use 等非 thinking 类型）、`error` 事件
-- **THEN** 全部事件原样透传，事件顺序、index、usage 计数不变
+- **WHEN** 流中出现 `message_start`、`message_delta`、`ping`、非 thinking 内容块或 `error` 事件
+- **THEN** 两种思考展示模式下事件顺序、index 与 usage 均保持不变
 
-#### Scenario: 常规 thinking 块渲染
-- **WHEN** 上游发出 thinking content_block_start、thinking_delta（含 `line one\r\n\r\nline two`）、content_block_stop
-- **THEN** 客户端收到同 index 的 text content_block_start、header text_delta、`\n> …line one…`、`\n> …line two…` 两个 text_delta、content_block_stop
-- **AND** signature_delta 事件被剥离，不转发给客户端
-
-#### Scenario: 空行跳过
-- **WHEN** thinking 内容包含空白行（如 `\r\n\r\n`）
-- **THEN** 不为空行输出任何空 quote 行 delta（避免 Claude Code 左侧竖线多出一截）
-
-#### Scenario: 无尾随换行
-- **WHEN** thinking 块结束
-- **THEN** 最后一个 text_delta 以 `\x1b[0m` 结尾，不以 `\n` 结尾
+#### Scenario: 空行与结尾格式
+- **GIVEN** `thinkingAsText=true`
+- **WHEN** thinking 内容包含空白行并结束
+- **THEN** 空白行不产生空 quote delta
+- **AND** 最后一个 text_delta 不带尾随换行
 
 ### Requirement: 空白 thinking 块不产生孤立事件
 代理 SHALL 在 thinking 块全部内容为空白且未发出任何事件时，跳过该块的 start/stop 事件，客户端不得收到无配对 start 的 content_block_stop。
@@ -65,18 +70,34 @@ cc-proxy 本地透明代理为 Claude Code 客户端提供深度思考文本化�
 - **THEN** thinking_delta 与 signature_delta 原样转发
 
 ### Requirement: 非流式响应文本化
-代理 SHALL 对 `stream: false` 响应 JSON 中的 thinking content 块做同等文本化（拼接为带 header 的 dim blockquote 文本块），仅对 CC UA 生效；无论块是否携带 `signature`，均 SHALL 转为 text 块并剥离签名（与流式剥离 signature_delta 行为对称）。
+代理 SHALL 对 CC UA 的非流式 message JSON 按 `thinkingAsText` 配置处理：开启时将 thinking content 块转换为带 header 的 dim blockquote text 块并剥离签名；关闭时 SHALL 保留原始响应 body 与 thinking signature。非 message JSON 与错误响应 SHALL 原样透传。
 
-#### Scenario: 非流式有签名 thinking
-- **WHEN** 上游返回非流式 JSON，content 含带 `signature` 的 thinking 块
-- **THEN** 客户端收到 type=text 的块，文本以 header 行开头、blockquote 逐行渲染，且无 `signature` 字段
+#### Scenario: 非流式文本化
+- **GIVEN** `thinkingAsText=true`
+- **WHEN** 上游返回 content 含带 `signature` thinking 块的非流式 message JSON
+- **THEN** 客户端收到对应 text 块
+- **AND** 响应不包含 thinking signature
+
+#### Scenario: 非流式原生思考
+- **GIVEN** `thinkingAsText=false`
+- **WHEN** 上游返回 content 含带 `signature` thinking 块的非流式 message JSON
+- **THEN** 客户端收到原始响应 body
+- **AND** thinking 块及 signature 保持不变
+
+#### Scenario: 非 message JSON 透传
+- **WHEN** 上游返回普通 JSON 错误体或其他非 message JSON
+- **THEN** 状态码、headers 与 body 原样返回
 
 ### Requirement: 非 SSE 流量透传
-代理 SHALL 将非 `text/event-stream` 响应（含 headers、status、body）原样透传，不改写。
+代理 SHALL 对 CC UA 的成功 message JSON 按 `thinkingAsText` 配置处理；其他非 SSE 响应 SHALL 将 headers、status 与 body 原样透传。
 
-#### Scenario: 普通响应
-- **WHEN** 上游返回 `application/json` 错误体（如 429）
-- **THEN** 状态码、headers、body 与上游一致地返回给客户端
+#### Scenario: 普通错误响应
+- **WHEN** 上游返回 `application/json` 错误体
+- **THEN** 状态码、headers 与 body 原样返回
+
+#### Scenario: 非 CC 客户端
+- **WHEN** 非 Claude Code 客户端收到非 SSE 响应
+- **THEN** 状态码、headers 与 body 原样返回
 
 ### Requirement: CLI 一键启动
 `claude-proxy` / `cc-proxy` 命令 SHALL 先启动本地代理（127.0.0.1 随机可用端口），再以注入 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` 的 env spawn `claude`（透传全部 CLI 参数与 stdio），claude 退出后进程 SHALL 以相同退出码退出。

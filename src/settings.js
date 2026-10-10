@@ -3,12 +3,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 export const DEFAULT_CONFIG = Object.freeze({
     thinkingWindow: { enabled: false, lines: 10 },
     // Suggestion Mode 放行开关：false（默认）拦截 CC 输入建议请求并返回空响应，
     // true 时正常转发上游（展示输入建议，产生额外计费）。
-    forwardSuggestionMode: false
+    forwardSuggestionMode: false,
+    // 默认保持现有 thinking → text 展示；false 时恢复 CC 原生 thinking 块。
+    thinkingAsText: true
 });
 
 const MIN_LINES = 1;
@@ -24,11 +27,12 @@ export function defaultConfigPath() {
 function normalizeConfig(raw) {
     const config = {
         thinkingWindow: { ...DEFAULT_CONFIG.thinkingWindow },
-        forwardSuggestionMode: DEFAULT_CONFIG.forwardSuggestionMode
+        forwardSuggestionMode: DEFAULT_CONFIG.forwardSuggestionMode,
+        thinkingAsText: DEFAULT_CONFIG.thinkingAsText
     };
-    if (!raw || typeof raw !== 'object') return config;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return config;
     const tw = raw.thinkingWindow;
-    if (tw && typeof tw === 'object') {
+    if (tw && typeof tw === 'object' && !Array.isArray(tw)) {
         if (typeof tw.enabled === 'boolean') config.thinkingWindow.enabled = tw.enabled;
         if (Number.isInteger(tw.lines) && tw.lines >= MIN_LINES && tw.lines <= MAX_LINES) {
             config.thinkingWindow.lines = tw.lines;
@@ -36,6 +40,9 @@ function normalizeConfig(raw) {
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {
         config.forwardSuggestionMode = raw.forwardSuggestionMode;
+    }
+    if (typeof raw.thinkingAsText === 'boolean') {
+        config.thinkingAsText = raw.thinkingAsText;
     }
     return config;
 }
@@ -57,14 +64,42 @@ export function writeConfig(partial, envDir) {
     const dir = envDir || path.join(os.homedir(), '.cc-proxy');
     const file = path.join(dir, 'config.json');
     const current = readConfig(dir);
-    const merged = {
+    const merged = normalizeConfig({
         thinkingWindow: { ...current.thinkingWindow, ...partial?.thinkingWindow },
         forwardSuggestionMode:
             typeof partial?.forwardSuggestionMode === 'boolean'
                 ? partial.forwardSuggestionMode
-                : current.forwardSuggestionMode
-    };
+                : current.forwardSuggestionMode,
+        thinkingAsText:
+            typeof partial?.thinkingAsText === 'boolean'
+                ? partial.thinkingAsText
+                : current.thinkingAsText
+    });
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(normalizeConfig(merged), null, 2) + '\n');
+    let mode = 0o600;
+    try {
+        mode = fs.statSync(file).mode & 0o777;
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+    const tempFile = path.join(dir, `.config.json.${process.pid}.${randomUUID()}.tmp`);
+    try {
+        fs.writeFileSync(tempFile, JSON.stringify(merged, null, 2) + '\n', {
+            encoding: 'utf8',
+            flag: 'wx',
+            mode
+        });
+        // writeFileSync 的 mode 受 umask 影响（如 0666 会被 umask 022 压成 0644），
+        // rename 前显式 chmod 确保保留原配置文件权限。
+        fs.chmodSync(tempFile, mode);
+        fs.renameSync(tempFile, file);
+    } catch (error) {
+        try {
+            fs.rmSync(tempFile, { force: true });
+        } catch {
+            // 保留原始写入或 rename 错误。
+        }
+        throw error;
+    }
     return readConfig(dir);
 }

@@ -13,7 +13,8 @@ context: |
       `src/cloudcode/thinking-text-streamer.js` (header line + `\n> ...` dim lines,
       blank lines skipped, no trailing newline). No ANSI cursor control codes are
       ever emitted (the former rolling-window extension was retired)
-    - Non-SSE traffic (headers, body, status) must pass through unmodified
+    - Non-message JSON responses, error responses, and non-SSE traffic not
+      participating in thinking conversion must pass through unmodified
     - SSE events unrelated to thinking blocks must pass through unmodified
     - Proxy-internal logging MUST be silent by default (src/logger.js); any
       stdout/stderr output leaks into Claude Code's Ink UI via stdio inheritance.

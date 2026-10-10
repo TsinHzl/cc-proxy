@@ -96,24 +96,28 @@ ANTHROPIC_BASE_URL=https://gw.example.com/api cc-proxy
 cc-proxy --setting
 ```
 
-进入交互式设置页，展示当前生效配置（持久化于 `~/.cc-proxy/config.json`）与落盘路径。按 `1` 切换 Suggestion Mode 转发开关（见下节），回车/Esc 不做修改直接退出。配置文件缺失或损坏时自动回退默认值，不影响启动。
+启动仅监听 `127.0.0.1` 的临时 Web 设置服务，并自动打开默认浏览器。页面只包含以下两个开关：
+
+- `Suggestion Mode 输入建议转发`：默认关闭；开启后把输入建议请求转发上游并额外消耗 token。
+- `思考内容文本化展示`：默认开启；关闭后恢复 Claude Code 原生折叠 Thinking 块。
+
+两个开关会即时、原子地写入 `~/.cc-proxy/config.json`，并对下次启动的代理会话生效。新配置文件权限为 `0600`；更新已有配置时保留原权限。页面在初始化和保存期间禁用两个开关，保存成功后采用服务端返回的完整设置，失败时回滚到最近一次服务端权威状态。
+
+终端和浏览器只显示不含凭据的基础 URL：
+
+```text
+http://127.0.0.1:<port>/
+```
+
+每次加载页面都会获得一个 30 秒有效、仅可兑换一次的 Bootstrap nonce；页面通过同源请求兑换临时 API token，token 不进入 URL、终端输出或 Referer。未消费 nonce 最多保留 256 个，超限时淘汰最旧项。
+
+设置 API 仅接受不超过 1024 字节的 JSON 正文，并对正文读取使用 5 秒绝对超时。最后一个设置页关闭后，服务等待 2 秒自动退出；宽限期内刷新并重新建立租约会取消退出。浏览器在 30 秒内未连接时，服务也会自动退出。关闭阶段若连接未在 1 秒内结束，服务会销毁残留 socket 并释放端口。浏览器未自动打开时，可手动访问终端输出的本地 URL。配置文件缺失或损坏时自动回退默认值，不影响启动。
 
 ### Suggestion Mode 输入建议
 
 Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建议请求（额外消耗 token）。本代理默认**拦截**这类请求并返回结构完整的空响应（流式/非流式自适应），主对话不受影响，`usage.json` 与 debug 日志零增量；非 Claude Code 客户端流量不受任何影响。
 
-在设置页按 `1` 切换转发开关（即时写盘）：终端打印「设置已保存：Suggestion Mode 输入建议转发 → 开/关（…）」后自动退出；回车/Esc 不做修改直接退出。
-
-```bash
-cc-proxy --setting
-```
-
-```
-[1] Suggestion Mode 输入建议转发: 关（拦截建议请求，返回空响应）
-
-设置已保存：Suggestion Mode 输入建议转发 → 开（转发上游，可能产生额外计费）
-已退出。
-```
+在 Web 设置页切换转发开关后会立即写盘；保存失败时页面恢复原状态并显示错误，设置服务保持可用。
 
 开启后建议请求正常转发上游（Claude Code 会展示输入建议，但会产生额外计费）。开关持久化于 `~/.cc-proxy/config.json` 的 `forwardSuggestionMode` 字段，**切换后对下次启动的会话生效**（已运行的代理在启动时读取一次配置）。
 
@@ -150,7 +154,7 @@ CC_PROXY_DEBUG=1 cc-proxy
 ## 开发
 
 ```bash
-npm test        # node:test 单元 + 端到端测试（75 项）
+npm test        # node:test 单元 + 端到端测试
 ```
 
 ## 目录结构
@@ -158,7 +162,9 @@ npm test        # node:test 单元 + 端到端测试（75 项）
 | 路径 | 说明 |
 |---|---|
 | `bin/claude-proxy.js` | CLI 入口：--version / --setting / 起代理 → 注入 env → spawn claude |
-| `bin/settings-cli.js` | `--setting` 交互设置页：按键流装配 + 菜单主循环 |
+| `bin/settings-web.js` | `--setting` 本地 Web 页面、受保护 API 与浏览器启动 |
+| `bin/settings-session.js` | 设置页 SSE 租约、定时器、socket 跟踪与关闭流程 |
+| `bin/settings-cli.js` | 旧终端设置菜单实现（当前 CLI 不再调用） |
 | `src/thinking-text.js` | 渲染核心：格式化、流式改写、历史剥离、UA 门控 |
 | `src/proxy.js` | HTTP 代理与响应改写（SSE / 非流式 JSON）、Suggestion Mode 拦截、usage/debug 挂接 |
 | `src/upstream.js` | 上游地址解析与请求转发 |

@@ -2,14 +2,17 @@
 // claude-proxy / cc-proxy — launches a local transparent proxy, then spawns
 // Claude Code with ANTHROPIC_BASE_URL pointed at it. The original
 // ANTHROPIC_BASE_URL (if any) becomes the proxy's upstream.
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
 import { createUsageTracker } from '../src/usage.js';
 import { readConfig } from '../src/settings.js';
 import { logger } from '../src/logger.js';
-import { runSettingsCli } from './settings-cli.js';
+import { runSettingsWeb } from './settings-web.js';
 
 const require = createRequire(import.meta.url);
 const CLAUDE_BIN = process.env.CLAUDE_PROXY_BIN || 'claude';
@@ -25,32 +28,58 @@ process.on('unhandledRejection', (err) => {
     logger.error('[cc-proxy] unhandled rejection:', err);
 });
 
-function main() {
+export function isDirectExecution({
+    moduleUrl = import.meta.url,
+    argvPath = process.argv[1],
+    platform = process.platform
+} = {}) {
+    if (!argvPath) return false;
+    try {
+        const modulePath = fs.realpathSync(path.resolve(fileURLToPath(moduleUrl)));
+        const entryPath = fs.realpathSync(path.resolve(argvPath));
+        return platform === 'win32'
+            ? modulePath.toLowerCase() === entryPath.toLowerCase()
+            : modulePath === entryPath;
+    } catch {
+        return false;
+    }
+}
+
+export function main({
+    argv = process.argv,
+    runSettings = runSettingsWeb,
+    readSettings = readConfig,
+    createProxy = createProxyServer,
+    spawnProcess = spawn
+} = {}) {
     // --version/-v: print version and exit, no proxy/claude started.
-    if (process.argv.includes('--version') || process.argv.includes('-v')) {
+    if (argv.includes('--version') || argv.includes('-v')) {
         const { version } = require('../package.json');
         process.stdout.write(`claude-proxy ${version}\n`);
         return;
     }
 
     // --setting: interactive settings page, no proxy/claude started.
-    if (process.argv.includes('--setting')) {
-        runSettingsCli().then(() => process.exit(0));
-        return;
+    if (argv.includes('--setting')) {
+        return runSettings();
     }
 
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
     const usageTracker = createUsageTracker();
-    // Suggestion Mode 放行开关从持久化配置读取（默认 false = 拦截建议请求）。
-    const { forwardSuggestionMode } = readConfig();
-    const server = createProxyServer({ baseUrlEnv: originalBase, usageTracker, forwardSuggestionMode });
+    const { forwardSuggestionMode, thinkingAsText } = readSettings();
+    const server = createProxy({
+        baseUrlEnv: originalBase,
+        usageTracker,
+        forwardSuggestionMode,
+        thinkingAsText
+    });
 
     server.listen(0, '127.0.0.1', () => {
         const { port } = server.address();
         logger.warn(`[claude-proxy] listening on http://127.0.0.1:${port} (upstream: ${originalBase || 'https://api.anthropic.com'})`);
 
-        const child = spawn(CLAUDE_BIN, process.argv.slice(2), {
+        const child = spawnProcess(CLAUDE_BIN, argv.slice(2), {
             stdio: 'inherit',
             env: { ...process.env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}` }
         });
@@ -75,4 +104,11 @@ function main() {
     });
 }
 
-main();
+if (isDirectExecution()) {
+    Promise.resolve()
+        .then(() => main())
+        .catch((error) => {
+            logger.error('[cc-proxy] failed:', error);
+            process.exitCode = 1;
+        });
+}

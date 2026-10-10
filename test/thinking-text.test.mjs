@@ -403,6 +403,41 @@ test('proxy e2e: rewrites thinking to text for CC UA, splits across chunks', asy
     }
 });
 
+test('proxy e2e: thinkingAsText false preserves native SSE thinking events', async () => {
+    const upstreamEvents = [
+        ev('message_start', { message: {} }),
+        ev('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'native thought' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'native-sig' } }),
+        ev('content_block_stop', { index: 0 }),
+        ev('message_stop')
+    ];
+    const upstream = await startMockUpstream(upstreamEvents);
+    const proxy = createProxyServer({
+        baseUrlEnv: `http://127.0.0.1:${upstream.address().port}`,
+        thinkingAsText: false
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST',
+            headers: { 'user-agent': 'claude-cli/2.1.231', 'content-type': 'application/json' },
+            body: '{}'
+        });
+        const raw = await res.text();
+        assert.ok(raw.includes('"type":"thinking"'));
+        assert.ok(raw.includes('"type":"thinking_delta"'));
+        assert.ok(raw.includes('native thought'));
+        assert.ok(raw.includes('"type":"signature_delta"'));
+        assert.ok(raw.includes('native-sig'));
+        assert.ok(!raw.includes('💭 Thinking'));
+    } finally {
+        proxy.close();
+        upstream.close();
+    }
+});
+
 test('proxy e2e: request-side history strip applied for CC UA', async () => {
     let capturedBody = null;
     const upstream = http.createServer((req, res) => {
@@ -478,6 +513,43 @@ test('proxy e2e: non-streaming message JSON thinking blocks rewritten for CC UA'
         const body2 = await res2.json();
         assert.equal(body2.content[0].type, 'thinking');
         assert.equal(body2.content[0].signature, 'sig==');
+    } finally {
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('proxy e2e: thinkingAsText false preserves non-streaming body', async () => {
+    const original = JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        content: [
+            { type: 'thinking', thinking: 'native thought', signature: 'sig==' },
+            { type: 'text', text: 'answer' }
+        ],
+        usage: { input_tokens: 1, output_tokens: 2 }
+    });
+    const upstream = http.createServer((req, res) => {
+        req.on('data', () => {});
+        req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(original);
+        });
+    });
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+    const proxy = createProxyServer({
+        baseUrlEnv: `http://127.0.0.1:${upstream.address().port}`,
+        thinkingAsText: false
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST',
+            headers: { 'user-agent': 'claude-cli/2.1.231', 'content-type': 'application/json' },
+            body: '{}'
+        });
+        assert.equal(await res.text(), original);
     } finally {
         proxy.close();
         upstream.close();

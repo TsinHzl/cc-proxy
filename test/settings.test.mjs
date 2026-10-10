@@ -5,6 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG, defaultConfigPath, readConfig, writeConfig } from '../src/settings.js';
 
+const EXPECTED_DEFAULT_CONFIG = {
+    thinkingWindow: { enabled: false, lines: 10 },
+    forwardSuggestionMode: false,
+    thinkingAsText: true
+};
+
 function tmpDir(t) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-settings-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -13,14 +19,14 @@ function tmpDir(t) {
 
 test('readConfig: missing file returns defaults, no file created', (t) => {
     const dir = tmpDir(t);
-    assert.deepEqual(readConfig(dir), { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
+    assert.deepEqual(readConfig(dir), EXPECTED_DEFAULT_CONFIG);
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false);
 });
 
 test('readConfig: malformed JSON falls back to defaults', (t) => {
     const dir = tmpDir(t);
     fs.writeFileSync(path.join(dir, 'config.json'), '{not json');
-    assert.deepEqual(readConfig(dir), { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
+    assert.deepEqual(readConfig(dir), EXPECTED_DEFAULT_CONFIG);
 });
 
 test('readConfig: invalid lines values fall back to 10', (t) => {
@@ -48,7 +54,38 @@ test('readConfig: non-boolean enabled falls back to false', (t) => {
 test('readConfig: non-object JSON (array/number) falls back to defaults', (t) => {
     const dir = tmpDir(t);
     fs.writeFileSync(path.join(dir, 'config.json'), '[1,2]');
-    assert.deepEqual(readConfig(dir), { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false });
+    assert.deepEqual(readConfig(dir), EXPECTED_DEFAULT_CONFIG);
+});
+
+test('readConfig: old config without thinkingAsText defaults it to true', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        thinkingWindow: { enabled: true, lines: 25 },
+        forwardSuggestionMode: true
+    }));
+    assert.deepEqual(readConfig(dir), {
+        thinkingWindow: { enabled: true, lines: 25 },
+        forwardSuggestionMode: true,
+        thinkingAsText: true
+    });
+});
+
+test('readConfig: explicit boolean false disables thinkingAsText', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ thinkingAsText: false }));
+    assert.equal(readConfig(dir).thinkingAsText, false);
+});
+
+test('readConfig: invalid thinkingAsText values fall back to true', (t) => {
+    const dir = tmpDir(t);
+    for (const thinkingAsText of [null, 0, 1, 'false', [], {}]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ thinkingAsText }));
+        assert.equal(
+            readConfig(dir).thinkingAsText,
+            true,
+            `thinkingAsText=${JSON.stringify(thinkingAsText)}`
+        );
+    }
 });
 
 // ---------- 写入与合并 ----------
@@ -59,6 +96,27 @@ test('writeConfig: creates dir and file, merged result returned', (t) => {
     assert.equal(out.thinkingWindow.enabled, true);
     assert.equal(out.thinkingWindow.lines, 25);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')), out);
+});
+
+test('writeConfig: creates new config with mode 0600', (t) => {
+    const dir = tmpDir(t);
+    const file = path.join(dir, 'config.json');
+
+    writeConfig({ thinkingAsText: false }, dir);
+
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
+
+test('writeConfig: preserves existing config mode', (t) => {
+    const dir = tmpDir(t);
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify(EXPECTED_DEFAULT_CONFIG));
+    fs.chmodSync(file, 0o640);
+
+    writeConfig({ thinkingAsText: false }, dir);
+
+    assert.equal(fs.statSync(file).mode & 0o777, 0o640);
+    assert.equal(readConfig(dir).thinkingAsText, false);
 });
 
 test('writeConfig: partial merge keeps other field', (t) => {
@@ -93,10 +151,87 @@ test('normalizeConfig: non-boolean forwardSuggestionMode falls back to false', (
     assert.equal(readConfig(dir).forwardSuggestionMode, false);
 });
 
+test('writeConfig: cross-field partial writes preserve unrelated settings', (t) => {
+    const dir = tmpDir(t);
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, JSON.stringify({
+        thinkingWindow: { enabled: true, lines: 30 },
+        forwardSuggestionMode: true,
+        thinkingAsText: false
+    }));
+
+    let out = writeConfig({ thinkingWindow: { lines: 40 } }, dir);
+    assert.deepEqual(out, {
+        thinkingWindow: { enabled: true, lines: 40 },
+        forwardSuggestionMode: true,
+        thinkingAsText: false
+    });
+
+    out = writeConfig({ forwardSuggestionMode: false }, dir);
+    assert.deepEqual(out, {
+        thinkingWindow: { enabled: true, lines: 40 },
+        forwardSuggestionMode: false,
+        thinkingAsText: false
+    });
+
+    out = writeConfig({ thinkingAsText: true }, dir);
+    assert.deepEqual(out, {
+        thinkingWindow: { enabled: true, lines: 40 },
+        forwardSuggestionMode: false,
+        thinkingAsText: true
+    });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), out);
+});
+
+test('writeConfig: temp write failure preserves original config and removes temp file', (t) => {
+    const dir = tmpDir(t);
+    const file = path.join(dir, 'config.json');
+    const original = '{"thinkingAsText":false}\n';
+    fs.writeFileSync(file, original);
+
+    const realWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = (target, data, ...args) => {
+        const targetPath = String(target);
+        if (path.dirname(targetPath) === dir && targetPath !== file) {
+            realWriteFileSync(targetPath, '{"partial"', ...args);
+            throw new Error('simulated temp write failure');
+        }
+        return realWriteFileSync(target, data, ...args);
+    };
+    t.after(() => { fs.writeFileSync = realWriteFileSync; });
+
+    assert.throws(() => writeConfig({ thinkingAsText: true }, dir), /simulated temp write failure/);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+});
+
+test('writeConfig: rename failure preserves original config and removes temp file', (t) => {
+    const dir = tmpDir(t);
+    const file = path.join(dir, 'config.json');
+    const original = '{"thinkingAsText":false}\n';
+    fs.writeFileSync(file, original);
+
+    const realRenameSync = fs.renameSync;
+    let observedTemp;
+    fs.renameSync = (source, destination) => {
+        observedTemp = String(source);
+        assert.equal(path.dirname(observedTemp), dir);
+        assert.equal(String(destination), file);
+        throw new Error('simulated rename failure');
+    };
+    t.after(() => { fs.renameSync = realRenameSync; });
+
+    assert.throws(() => writeConfig({ thinkingAsText: true }, dir), /simulated rename failure/);
+    assert.ok(observedTemp);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    assert.deepEqual(fs.readdirSync(dir), ['config.json']);
+});
+
 test('defaultConfigPath: points at ~/.cc-proxy/config.json', () => {
     assert.equal(defaultConfigPath(), path.join(os.homedir(), '.cc-proxy', 'config.json'));
 });
 
-test('DEFAULT_CONFIG is frozen', () => {
+test('DEFAULT_CONFIG contains expected defaults and is frozen', () => {
+    assert.deepEqual(DEFAULT_CONFIG, EXPECTED_DEFAULT_CONFIG);
     assert.ok(Object.isFrozen(DEFAULT_CONFIG));
 });
