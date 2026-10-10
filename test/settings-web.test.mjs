@@ -16,16 +16,19 @@ import {
     SESSION_TIMING
 } from '../bin/settings-web.js';
 
-test('page: renders dark settings page with exactly three switches', () => {
+test('page: renders dark settings page with exactly four switches', () => {
     const html = renderSettingsPage();
     const switches = html.match(/<input[^>]+type="checkbox"/g) ?? [];
 
     assert.match(html, /<title>cc-proxy 设置<\/title>/);
-    assert.equal(switches.length, 3);
+    assert.equal(switches.length, 4);
     assert.match(html, /id="forwardSuggestionMode"/);
     assert.match(html, /id="thinkingAsText"/);
     assert.match(html, /id="effortOverrideEnabled"/);
     assert.match(html, /id="effortOverrideLevel"/);
+    assert.match(html, /id="systemPromptOverrideEnabled"/);
+    assert.match(html, /id="systemPromptTemplate"/);
+    assert.match(html, /id="systemPromptOverridePrompt"/);
     assert.match(html, /<option value="low">/);
     assert.match(html, /<option value="medium">/);
     assert.match(html, /<option value="high">/);
@@ -45,6 +48,9 @@ test('page: explains suggestion forwarding and thinking text behavior', () => {
     assert.match(html, /恢复 Claude Code 原生折叠 Thinking 块/);
     assert.match(html, /Effort 覆写/);
     assert.match(html, /无论 Claude Code 本地 effort 设置是什么/);
+    assert.match(html, /系统提示词覆写/);
+    assert.match(html, /为空时不生效/);
+    assert.match(html, /内置工具与技能说明失效/);
     assert.match(html, /下次启动会话生效/);
 });
 
@@ -98,6 +104,7 @@ function createPageElement({ disabled = false } = {}) {
         addEventListener(type, listener) {
             listeners.set(type, listener);
         },
+        appendChild() {},
         async dispatch(type) {
             await listeners.get(type)?.({ type, target: this, currentTarget: this });
         }
@@ -137,6 +144,23 @@ function createPageHarness(fetchHandler) {
                 selectTag('effortOverrideLevel')
             )
         }),
+        systemPromptOverrideEnabled: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                inputTag('systemPromptOverrideEnabled')
+            )
+        }),
+        systemPromptTemplate: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                selectTag('systemPromptTemplate')
+            )
+        }),
+        systemPromptOverridePrompt: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                html.match(
+                    /<textarea[^>]+id="systemPromptOverridePrompt"[^>]*>/i
+                )?.[0] ?? ''
+            )
+        }),
         status: createPageElement()
     };
     const calls = [];
@@ -150,7 +174,8 @@ function createPageHarness(fetchHandler) {
     let reloadCount = 0;
     const vmContext = {
         document: {
-            getElementById: (id) => elements[id]
+            getElementById: (id) => elements[id],
+            createElement: () => createPageElement()
         },
         fetch: async (url, options = {}) => {
             const call = { url, options };
@@ -163,7 +188,8 @@ function createPageHarness(fetchHandler) {
             reload() {
                 reloadCount += 1;
             }
-        }
+        },
+        createElement: () => createPageElement()
     };
     vm.runInNewContext(extractInlineScript(html), vmContext);
     return {
@@ -947,7 +973,8 @@ test(
         assert.deepEqual((await initial.json()).data, {
             forwardSuggestionMode: false,
             thinkingAsText: true,
-            effortOverride: { enabled: true, level: 'high' }
+            effortOverride: { enabled: true, level: 'high' },
+            systemPromptOverride: { enabled: false, prompt: '' }
         });
 
         const updated = await fetch(`${origin}/api/settings`, {
@@ -966,7 +993,8 @@ test(
         assert.deepEqual((await updated.json()).data, {
             forwardSuggestionMode: true,
             thinkingAsText: true,
-            effortOverride: { enabled: true, level: 'high' }
+            effortOverride: { enabled: true, level: 'high' },
+            systemPromptOverride: { enabled: false, prompt: '' }
         });
 
         const configFile = path.join(envDir, 'config.json');
@@ -976,7 +1004,8 @@ test(
                 thinkingWindow: { enabled: false, lines: 10 },
                 forwardSuggestionMode: true,
                 thinkingAsText: true,
-                effortOverride: { enabled: true, level: 'high' }
+                effortOverride: { enabled: true, level: 'high' },
+                systemPromptOverride: { enabled: false, prompt: '' }
             }
         );
         assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
@@ -1305,6 +1334,131 @@ test('API: rejects invalid effortOverride patches without writes', async (t) => 
     assert.equal(writes, 0);
 });
 
+test('API: PATCH systemPromptOverride writes prompt and enabled', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            systemPromptOverride: { enabled: false, prompt: '' }
+        }),
+        write: (partial) => {
+            update = partial;
+            return {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                systemPromptOverride: { enabled: false, prompt: '自定义提示词' }
+            };
+        }
+    });
+    t.after(api.close);
+
+    const promptPatch = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'systemPromptOverride.prompt', value: '自定义提示词' })
+    });
+    assert.equal(promptPatch.status, 200);
+    assert.deepEqual(update, { systemPromptOverride: { prompt: '自定义提示词' } });
+    assert.deepEqual((await promptPatch.json()).data.systemPromptOverride, {
+        enabled: false,
+        prompt: '自定义提示词'
+    });
+
+    const enabledPatch = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'systemPromptOverride.enabled', value: true })
+    });
+    assert.equal(enabledPatch.status, 200);
+    assert.deepEqual(update, { systemPromptOverride: { enabled: true } });
+});
+
+test('API: rejects invalid systemPromptOverride patches without writes', async (t) => {
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            systemPromptOverride: { enabled: false, prompt: '' }
+        }),
+        write: () => { writes += 1; }
+    });
+    t.after(api.close);
+
+    for (const body of [
+        // prompt 非字符串与超 256KB（UTF-8 字节；90000 个汉字 = 270000 字节，
+        // 高于 prompt 校验上限且低于 320KB 正文上限，确保走 400 校验拒绝路径）。
+        JSON.stringify({ key: 'systemPromptOverride.prompt', value: 42 }),
+        JSON.stringify({ key: 'systemPromptOverride.prompt', value: null }),
+        JSON.stringify({ key: 'systemPromptOverride.prompt', value: '中'.repeat(90000) }),
+        // enabled 非布尔值。
+        JSON.stringify({ key: 'systemPromptOverride.enabled', value: 'true' }),
+        JSON.stringify({ key: 'systemPromptOverride.enabled', value: 1 })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, 0);
+});
+
+test('API: GET captured-system-prompt returns captured text or null', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-captured-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const capturedFile = path.join(home, '.cc-proxy', 'captured-system-prompt.json');
+    fs.mkdirSync(path.dirname(capturedFile), { recursive: true });
+    fs.writeFileSync(capturedFile, JSON.stringify({ prompt: 'You are Claude Code.' }));
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    const captured = await fetch(`${api.origin}/api/captured-system-prompt`, {
+        headers: authHeaders(api)
+    });
+    assert.equal(captured.status, 200);
+    assert.deepEqual(await captured.json(), {
+        ok: true,
+        data: { prompt: 'You are Claude Code.' }
+    });
+
+    // 未捕获（文件缺失）时 prompt 为 null。
+    fs.rmSync(capturedFile, { force: true });
+    const missing = await fetch(`${api.origin}/api/captured-system-prompt`, {
+        headers: authHeaders(api)
+    });
+    assert.equal(missing.status, 200);
+    assert.deepEqual(await missing.json(), { ok: true, data: { prompt: null } });
+});
+
+test('API: captured-system-prompt rejects invalid token and non-GET', async (t) => {
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    const unauthorized = await fetch(`${api.origin}/api/captured-system-prompt`);
+    assert.equal(unauthorized.status, 401);
+
+    const post = await fetch(`${api.origin}/api/captured-system-prompt`, {
+        method: 'POST',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: '{}'
+    });
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET');
+});
+
 test('API: rejects invalid token, Host and Origin without writes', async (t) => {
     let writes = 0;
     const api = await startApi({
@@ -1364,7 +1518,7 @@ test('API: rejects method, content-type, oversized and invalid bodies', async (t
     const oversized = await fetch(`${api.origin}/api/settings`, {
         method: 'PATCH',
         headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ key: 'thinkingAsText', value: false, padding: 'x'.repeat(1024) })
+        body: JSON.stringify({ key: 'thinkingAsText', value: false, padding: 'x'.repeat(327_681) })
     });
     assert.equal(oversized.status, 413);
 
@@ -1423,7 +1577,7 @@ test('API: read failure returns 500 and server remains usable', async (t) => {
     assert.equal(healthy.status, 200);
 });
 
-test('API: accepts valid JSON at 1024 bytes and rejects chunked 1025 bytes', async (t) => {
+test('API: accepts valid JSON at limit bytes and rejects chunked over limit', async (t) => {
     let update = null;
     const api = await startApi({
         read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
@@ -1440,7 +1594,7 @@ test('API: accepts valid JSON at 1024 bytes and rejects chunked 1025 bytes', asy
     const exactBody = padJsonToBytes({
         key: 'thinkingAsText',
         value: false
-    }, 1024);
+    }, 327_680);
     const exact = await fetch(`${api.origin}/api/settings`, {
         method: 'PATCH',
         headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
@@ -1474,8 +1628,8 @@ test('API: accepts valid JSON at 1024 bytes and rejects chunked 1025 bytes', asy
             }));
         });
         request.on('error', reject);
-        request.write('x'.repeat(600));
-        request.end('x'.repeat(425));
+        request.write('x'.repeat(200_000));
+        request.end('x'.repeat(127_681));
     });
     assert.equal(oversized.status, 413);
     assert.deepEqual(oversized.body, { ok: false, error: '请求体过大' });
@@ -1485,8 +1639,8 @@ test('API: accepts valid JSON at 1024 bytes and rejects chunked 1025 bytes', asy
     assert.equal(healthy.status, 200);
 });
 
-test('API body: rejects Content-Length 1025 before reading data', async () => {
-    const req = createBodyRequest({ contentLength: 1025 });
+test('API body: rejects Content-Length over limit before reading data', async () => {
+    const req = createBodyRequest({ contentLength: 327_681 });
     const res = createJsonResponseRecorder();
     const handler = createBodyHandler({
         write: () => assert.fail('write should not run')
@@ -1513,7 +1667,7 @@ test('API body: rejects Content-Length 1025 before reading data', async () => {
     assert.equal(req.resumeCalls, 1);
 });
 
-test('API body: rejects chunked byte 1025 before end and destroys after flush', async () => {
+test('API body: rejects chunked byte over limit before end and destroys after flush', async () => {
     const req = createBodyRequest();
     const res = createJsonResponseRecorder();
     const handler = createBodyHandler({
@@ -1524,8 +1678,8 @@ test('API body: rejects chunked byte 1025 before end and destroys after flush', 
         settled = true;
     });
 
-    req.emit('data', Buffer.alloc(600));
-    req.emit('data', Buffer.alloc(424));
+    req.emit('data', Buffer.alloc(200_000));
+    req.emit('data', Buffer.alloc(127_680));
     await flushAsyncTurn();
     assert.equal(res.endCalls, 0);
 

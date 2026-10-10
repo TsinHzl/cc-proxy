@@ -2,6 +2,7 @@ import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readConfig, writeConfig } from '../src/settings.js';
+import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import {
     SESSION_TIMING,
     createSessionLifecycle
@@ -10,16 +11,22 @@ import { renderSettingsPage } from './settings-page.js';
 
 export { SESSION_TIMING, createSessionLifecycle, renderSettingsPage };
 
-const MAX_BODY_BYTES = 1024;
+// PATCH 正文上限：systemPromptOverride.prompt 校验上限 256KB + 64KB JSON
+// 包装/转义余量，确保任何通过配置校验的 prompt 均可经设置页提交。
+const MAX_BODY_BYTES = 327_680;
 const BODY_TIMEOUT_MS = 5_000;
 const MAX_TIMER_MS = 2_147_483_647;
 const BOOTSTRAP_NONCE_TTL_MS = 30_000;
 const MAX_BOOTSTRAP_NONCES = 256;
+// 自定义系统提示词上限：与 src/settings.js 的 MAX_PROMPT_BYTES 一致。
+const MAX_PROMPT_BYTES = 256 * 1024;
 const ALLOWED_KEYS = new Set([
     'forwardSuggestionMode',
     'thinkingAsText',
     'effortOverride.enabled',
-    'effortOverride.level'
+    'effortOverride.level',
+    'systemPromptOverride.enabled',
+    'systemPromptOverride.prompt'
 ]);
 // effort 档位枚举单点定义（与 src/settings.js 的 EFFORT_LEVELS 保持一致）。
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
@@ -53,7 +60,8 @@ function publicSettings(config) {
     return {
         forwardSuggestionMode: config.forwardSuggestionMode,
         thinkingAsText: config.thinkingAsText,
-        effortOverride: config.effortOverride
+        effortOverride: config.effortOverride,
+        systemPromptOverride: config.systemPromptOverride
     };
 }
 
@@ -292,13 +300,17 @@ async function handleSessionRequest(context, req, res, url) {
     return true;
 }
 
-// 点号 key（effortOverride.enabled / effortOverride.level）按 key 分流校验
+// 点号 key（effortOverride.* / systemPromptOverride.*）按 key 分流校验
 // value 类型；顶层布尔 key 维持原有布尔校验。
 function isValidSettingsPatch(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
     if (Object.keys(body).length !== 2 || !ALLOWED_KEYS.has(body.key)) return false;
     if (body.key === 'effortOverride.level') {
         return EFFORT_LEVELS.has(body.value);
+    }
+    if (body.key === 'systemPromptOverride.prompt') {
+        return typeof body.value === 'string'
+            && Buffer.byteLength(body.value, 'utf8') <= MAX_PROMPT_BYTES;
     }
     return typeof body.value === 'boolean';
 }
@@ -369,6 +381,25 @@ async function handleSettingsApiRequest(
     url,
     host
 ) {
+    if (url.pathname === '/api/captured-system-prompt') {
+        if (req.method !== 'GET') {
+            sendJson(
+                res,
+                405,
+                { ok: false, error: '请求方法不支持' },
+                { allow: 'GET' }
+            );
+            return;
+        }
+        const captured = createSystemPromptCapture({
+            file: capturedSystemPromptPath()
+        });
+        sendJson(res, 200, {
+            ok: true,
+            data: { prompt: captured?.readCaptured() ?? null }
+        });
+        return;
+    }
     if (url.pathname !== '/api/settings') {
         sendJson(res, 404, {
             ok: false,

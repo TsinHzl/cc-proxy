@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
 import { createUsageTracker } from '../src/usage.js';
 import { readConfig } from '../src/settings.js';
+import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import { logger } from '../src/logger.js';
 import { runSettingsWeb } from './settings-web.js';
 
@@ -67,13 +68,17 @@ export function main({
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
     const usageTracker = createUsageTracker();
-    const { forwardSuggestionMode, thinkingAsText, effortOverride } = readSettings();
+    const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = readSettings();
     const server = createProxy({
         baseUrlEnv: originalBase,
         usageTracker,
         forwardSuggestionMode,
         thinkingAsText,
-        effortOverride
+        effortOverride,
+        systemPromptOverride,
+        systemPromptCapture: createSystemPromptCapture({
+            file: capturedSystemPromptPath()
+        })
     });
 
     server.listen(0, '127.0.0.1', () => {

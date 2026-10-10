@@ -14,12 +14,17 @@ export const DEFAULT_CONFIG = Object.freeze({
     thinkingAsText: true,
     // Effort 覆写：开启时统一将 CC 请求体中的 effort 档位改写为 level，
     // 无论 CC 本地设置是什么。默认开启且为 high。
-    effortOverride: { enabled: true, level: 'high' }
+    effortOverride: { enabled: true, level: 'high' },
+    // 系统提示词覆写：开启且 prompt 非空时统一将 CC 请求体的 system 字段
+    // 替换为配置文本。默认关闭；prompt 为空时覆写按 no-op 处理。
+    systemPromptOverride: { enabled: false, prompt: '' }
 });
 
 const MIN_LINES = 1;
 const MAX_LINES = 100;
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
+// 自定义系统提示词上限：与 thinking-text.js 的 MAX_THINKING_TEXT_BLOCK_BYTES 对齐。
+const MAX_PROMPT_BYTES = 256 * 1024;
 
 // 供 settings-cli 显示与 e2e 断言的默认落盘路径。
 export function defaultConfigPath() {
@@ -28,13 +33,15 @@ export function defaultConfigPath() {
 
 // 行数非法（非整数、<1 或 >100）回退默认 10；enabled / forwardSuggestionMode
 // 非布尔回退 false（默认拦截建议请求）；effortOverride.enabled 非布尔回退 true，
-// level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）。
+// level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）；
+// systemPromptOverride.enabled 非布尔回退 false，prompt 非字符串或超 256KB 回退 ''。
 function normalizeConfig(raw) {
     const config = {
         thinkingWindow: { ...DEFAULT_CONFIG.thinkingWindow },
         forwardSuggestionMode: DEFAULT_CONFIG.forwardSuggestionMode,
         thinkingAsText: DEFAULT_CONFIG.thinkingAsText,
-        effortOverride: { ...DEFAULT_CONFIG.effortOverride }
+        effortOverride: { ...DEFAULT_CONFIG.effortOverride },
+        systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride }
     };
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return config;
     const tw = raw.thinkingWindow;
@@ -48,6 +55,14 @@ function normalizeConfig(raw) {
     if (eo && typeof eo === 'object' && !Array.isArray(eo)) {
         if (typeof eo.enabled === 'boolean') config.effortOverride.enabled = eo.enabled;
         if (EFFORT_LEVELS.has(eo.level)) config.effortOverride.level = eo.level;
+    }
+    const spo = raw.systemPromptOverride;
+    if (spo && typeof spo === 'object' && !Array.isArray(spo)) {
+        if (typeof spo.enabled === 'boolean') config.systemPromptOverride.enabled = spo.enabled;
+        if (typeof spo.prompt === 'string'
+            && Buffer.byteLength(spo.prompt, 'utf8') <= MAX_PROMPT_BYTES) {
+            config.systemPromptOverride.prompt = spo.prompt;
+        }
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {
         config.forwardSuggestionMode = raw.forwardSuggestionMode;
@@ -79,6 +94,10 @@ export function writeConfig(partial, envDir) {
     const merged = normalizeConfig({
         thinkingWindow: { ...current.thinkingWindow, ...partial?.thinkingWindow },
         effortOverride: { ...current.effortOverride, ...partial?.effortOverride },
+        systemPromptOverride: {
+            ...current.systemPromptOverride,
+            ...partial?.systemPromptOverride
+        },
         forwardSuggestionMode:
             typeof partial?.forwardSuggestionMode === 'boolean'
                 ? partial.forwardSuggestionMode

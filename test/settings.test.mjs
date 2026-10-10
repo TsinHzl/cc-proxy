@@ -9,7 +9,8 @@ const EXPECTED_DEFAULT_CONFIG = {
     thinkingWindow: { enabled: false, lines: 10 },
     forwardSuggestionMode: false,
     thinkingAsText: true,
-    effortOverride: { enabled: true, level: 'high' }
+    effortOverride: { enabled: true, level: 'high' },
+    systemPromptOverride: { enabled: false, prompt: '' }
 };
 
 function tmpDir(t) {
@@ -68,7 +69,8 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         thinkingWindow: { enabled: true, lines: 25 },
         forwardSuggestionMode: true,
         thinkingAsText: true,
-        effortOverride: { enabled: true, level: 'high' }
+        effortOverride: { enabled: true, level: 'high' },
+        systemPromptOverride: { enabled: false, prompt: '' }
     });
 });
 
@@ -159,6 +161,84 @@ test('readConfig: invalid thinkingAsText values fall back to true', (t) => {
     }
 });
 
+// ---------- systemPromptOverride ----------
+
+test('readConfig: old config without systemPromptOverride defaults it to disabled/empty', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        thinkingWindow: { enabled: true, lines: 25 },
+        forwardSuggestionMode: true
+    }));
+    assert.deepEqual(readConfig(dir).systemPromptOverride, { enabled: false, prompt: '' });
+});
+
+test('readConfig: explicit systemPromptOverride values persist', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        systemPromptOverride: { enabled: true, prompt: '自定义提示词' }
+    }));
+    assert.deepEqual(readConfig(dir).systemPromptOverride, { enabled: true, prompt: '自定义提示词' });
+});
+
+test('readConfig: invalid systemPromptOverride fields fall back field-by-field', (t) => {
+    const dir = tmpDir(t);
+    for (const enabled of [null, 0, 1, 'true', []]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            systemPromptOverride: { enabled, prompt: 'x' }
+        }));
+        assert.equal(readConfig(dir).systemPromptOverride.enabled, false, `enabled=${JSON.stringify(enabled)}`);
+    }
+    for (const prompt of [null, 0, 42, true, [], {}]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            systemPromptOverride: { enabled: true, prompt }
+        }));
+        assert.equal(readConfig(dir).systemPromptOverride.prompt, '', `prompt=${JSON.stringify(prompt)}`);
+    }
+});
+
+test('readConfig: prompt over 256KB falls back to empty string', (t) => {
+    const dir = tmpDir(t);
+    // 边界内：256KB 以内的多字节中文（UTF-8 计）接受。
+    const atLimit = 'a'.repeat(256 * 1024 - 3) + '中';
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        systemPromptOverride: { enabled: true, prompt: atLimit }
+    }));
+    assert.equal(readConfig(dir).systemPromptOverride.prompt, atLimit);
+    // 超限：整段回退空串而非截断。
+    const overLimit = atLimit + '中';
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        systemPromptOverride: { enabled: true, prompt: overLimit }
+    }));
+    assert.equal(readConfig(dir).systemPromptOverride.prompt, '');
+});
+
+test('readConfig: non-object systemPromptOverride falls back to defaults', (t) => {
+    const dir = tmpDir(t);
+    for (const systemPromptOverride of [null, 'x', 7, ['enabled']]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ systemPromptOverride }));
+        assert.deepEqual(readConfig(dir).systemPromptOverride, { enabled: false, prompt: '' });
+    }
+});
+
+test('writeConfig: systemPromptOverride partial merge keeps sibling field', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ systemPromptOverride: { enabled: true, prompt: 'v1' } }, dir);
+    const out = writeConfig({ systemPromptOverride: { prompt: 'v2' } }, dir);
+    // 逐字段合并：只改 prompt 时 enabled 保留原值 true。
+    assert.equal(out.systemPromptOverride.prompt, 'v2');
+    assert.equal(out.systemPromptOverride.enabled, true);
+});
+
+test('writeConfig: systemPromptOverride write keeps other top-level settings', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
+    const out = writeConfig({ systemPromptOverride: { prompt: 'x' } }, dir);
+    // 防丢失：写 systemPromptOverride 不得重置已保存的顶层开关。
+    assert.equal(out.forwardSuggestionMode, true);
+    assert.equal(out.thinkingAsText, false);
+    assert.deepEqual(out.systemPromptOverride, { enabled: false, prompt: 'x' });
+});
+
 // ---------- 写入与合并 ----------
 
 test('writeConfig: creates dir and file, merged result returned', (t) => {
@@ -237,7 +317,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: true,
         thinkingAsText: false,
-        effortOverride: { enabled: false, level: 'low' }
+        effortOverride: { enabled: false, level: 'low' },
+        systemPromptOverride: { enabled: false, prompt: '' }
     });
 
     out = writeConfig({ forwardSuggestionMode: false }, dir);
@@ -245,7 +326,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
         thinkingAsText: false,
-        effortOverride: { enabled: false, level: 'low' }
+        effortOverride: { enabled: false, level: 'low' },
+        systemPromptOverride: { enabled: false, prompt: '' }
     });
 
     out = writeConfig({ thinkingAsText: true }, dir);
@@ -253,7 +335,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
         thinkingAsText: true,
-        effortOverride: { enabled: false, level: 'low' }
+        effortOverride: { enabled: false, level: 'low' },
+        systemPromptOverride: { enabled: false, prompt: '' }
     });
 
     out = writeConfig({ effortOverride: { enabled: true, level: 'medium' } }, dir);
@@ -261,7 +344,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
         thinkingAsText: true,
-        effortOverride: { enabled: true, level: 'medium' }
+        effortOverride: { enabled: true, level: 'medium' },
+        systemPromptOverride: { enabled: false, prompt: '' }
     });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), out);
 });

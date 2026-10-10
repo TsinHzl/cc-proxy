@@ -61,6 +61,22 @@ select {
 select:hover:not(:disabled) { border-color: var(--accent); }
 select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 select:disabled { cursor: wait; opacity: .62; }
+textarea {
+    display: block;
+    width: 100%;
+    min-height: 132px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--page-bg);
+    color: var(--text);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    resize: vertical;
+}
+textarea:hover:not(:disabled) { border-color: var(--accent); }
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea:disabled { cursor: wait; opacity: .62; }
+.prompt-block { display: block; padding: 10px 16px 14px; }
 .status { min-height: 20px; margin: 8px 4px 0; color: var(--muted); }
 .status.error { color: var(--error); }
 @media (max-width: 640px) {
@@ -119,6 +135,24 @@ const PAGE_BODY = `
                 </label>
             </div>
         </div>
+        <div class="setting">
+            <div class="copy">
+                <h2>系统提示词覆写</h2>
+                <p class="description">开启后所有请求的 system 提示词被替换为下方文本（为空时不生效）。覆写可能使 Claude Code 内置工具与技能说明失效。</p>
+            </div>
+            <div class="controls">
+                <select id="systemPromptTemplate" aria-label="系统提示词模板" disabled>
+                    <option value="">选择模板…</option>
+                </select>
+                <label class="switch" for="systemPromptOverrideEnabled">
+                    <input id="systemPromptOverrideEnabled" type="checkbox" disabled>
+                    <span class="track" aria-hidden="true"></span>
+                </label>
+            </div>
+        </div>
+        <div class="prompt-block">
+            <textarea id="systemPromptOverridePrompt" aria-label="自定义系统提示词" disabled spellcheck="false"></textarea>
+        </div>
     </section>
     <p id="status" class="status" role="status" aria-live="polite"></p>
 </main>
@@ -135,10 +169,35 @@ const PAGE_SCRIPT = `
     // 是否存在进行中的 PATCH 保存。
     let saving = false;
     const status = document.getElementById('status');
-    // 布尔开关字段；effortOverride 为嵌套字段（data.effortOverride.enabled）。
-    const switchFields = ['forwardSuggestionMode', 'thinkingAsText', 'effortOverrideEnabled'];
-    // 所需禁用的全部控件（开关 + 档位下拉）。
-    const controls = [...switchFields, 'effortOverrideLevel'];
+    // 布尔开关字段；effortOverride / systemPromptOverride 为嵌套字段。
+    const switchFields = [
+        'forwardSuggestionMode',
+        'thinkingAsText',
+        'effortOverrideEnabled',
+        'systemPromptOverrideEnabled'
+    ];
+    // 所需禁用的全部控件（开关 + 档位/模板下拉 + 提示词输入框）。
+    const controls = [
+        ...switchFields,
+        'effortOverrideLevel',
+        'systemPromptTemplate',
+        'systemPromptOverridePrompt'
+    ];
+    // 预置中文模板：选择后仅填入输入框，不直接保存。
+    const SYSTEM_PROMPT_TEMPLATES = [
+        {
+            name: '极简模式',
+            text: 'You are a concise assistant. Answer directly with the minimum necessary words. No preamble, no restating the question.'
+        },
+        {
+            name: '中文优先',
+            text: '你是一个乐于助人的智能助手。请始终使用简体中文回答，回答应准确、直接、结构清晰；代码与专有技术名词保持原文。'
+        },
+        {
+            name: '默认+追加规则',
+            text: "You are Claude Code, Anthropic's official CLI for Claude.\\nAdditional rules:\\n- Keep responses short and actionable.\\n- Show diffs instead of prose explanations."
+        }
+    ];
 
     // disabled 由状态派生：租约不活跃或有保存进行中 → 禁用。
     function setDisabled(disabled) {
@@ -152,11 +211,15 @@ const PAGE_SCRIPT = `
         for (const key of switchFields) {
             const value = key === 'effortOverrideEnabled'
                 ? data.effortOverride?.enabled
-                : data[key];
+                : key === 'systemPromptOverrideEnabled'
+                    ? data.systemPromptOverride?.enabled
+                    : data[key];
             document.getElementById(key).checked = value;
         }
         document.getElementById('effortOverrideLevel').value
             = data.effortOverride?.level ?? 'high';
+        document.getElementById('systemPromptOverridePrompt').value
+            = data.systemPromptOverride?.prompt ?? '';
     }
 
     function acceptSettings(data) {
@@ -166,6 +229,10 @@ const PAGE_SCRIPT = `
             effortOverride: {
                 enabled: data.effortOverride?.enabled,
                 level: data.effortOverride?.level
+            },
+            systemPromptOverride: {
+                enabled: data.systemPromptOverride?.enabled,
+                prompt: data.systemPromptOverride?.prompt
             }
         };
         applySettings(authoritativeSnapshot);
@@ -209,21 +276,34 @@ const PAGE_SCRIPT = `
         const input = document.getElementById(key);
         input.addEventListener('change', async () => {
             const requestedValue = input.checked;
-            // 嵌套字段 effortOverrideEnabled 对应 API key effortOverride.enabled。
+            // 嵌套字段对应的 API key；顶层布尔 key 保持原名。
             const apiKey = key === 'effortOverrideEnabled'
                 ? 'effortOverride.enabled'
-                : key;
+                : key === 'systemPromptOverrideEnabled'
+                    ? 'systemPromptOverride.enabled'
+                    : key;
             saving = true;
             setDisabled(true);
             try {
-                const response = await fetch('/api/settings', {
-                    method: 'PATCH',
-                    headers: { ...headers, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ key: apiKey, value: requestedValue })
-                });
-                if (!response.ok) throw new Error('保存失败');
-                const { data } = await response.json();
-                acceptSettings(data);
+                // 系统提示词开关首次开启且输入框为空：先拉取捕获的 CC 默认
+                // 提示词预填并提交 prompt，再提交 enabled（保证首次开启即
+                // 带着预填内容生效；无捕获数据时保持为空继续保存）。
+                if (key === 'systemPromptOverrideEnabled' && requestedValue
+                    && !document.getElementById('systemPromptOverridePrompt').value) {
+                    try {
+                        const captured = await fetch('/api/captured-system-prompt', { headers });
+                        if (captured.ok) {
+                            const { data } = await captured.json();
+                            if (data?.prompt) {
+                                document.getElementById('systemPromptOverridePrompt').value = data.prompt;
+                                await patchSetting('systemPromptOverride.prompt', data.prompt);
+                            }
+                        }
+                    } catch {
+                        // 预填失败不阻断开关保存。
+                    }
+                }
+                await patchSetting(apiKey, requestedValue);
                 show('设置已保存，将在下次启动会话生效');
             } catch (error) {
                 if (authoritativeSnapshot) {
@@ -238,6 +318,17 @@ const PAGE_SCRIPT = `
         });
     }
 
+    async function patchSetting(key, value) {
+        const response = await fetch('/api/settings', {
+            method: 'PATCH',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key, value })
+        });
+        if (!response.ok) throw new Error('保存失败');
+        const { data } = await response.json();
+        acceptSettings(data);
+    }
+
     // Effort 档位下拉：提交 effortOverride.level，保存期间禁用全部控件。
     document.getElementById('effortOverrideLevel').addEventListener('change', async (event) => {
         const select = event.currentTarget;
@@ -245,14 +336,46 @@ const PAGE_SCRIPT = `
         saving = true;
         setDisabled(true);
         try {
-            const response = await fetch('/api/settings', {
-                method: 'PATCH',
-                headers: { ...headers, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: 'effortOverride.level', value: requestedValue })
-            });
-            if (!response.ok) throw new Error('保存失败');
-            const { data } = await response.json();
-            acceptSettings(data);
+            await patchSetting('effortOverride.level', requestedValue);
+            show('设置已保存，将在下次启动会话生效');
+        } catch (error) {
+            if (authoritativeSnapshot) {
+                applySettings(authoritativeSnapshot);
+            }
+            show(error.message, true);
+        } finally {
+            saving = false;
+            // 仅在租约仍活跃时恢复启用；租约已断开则保持禁用。
+            setDisabled(!leaseActive);
+        }
+    });
+
+    // 系统提示词模板下拉：仅填入输入框不保存（用户还有修改机会）。
+    const templateSelect = document.getElementById('systemPromptTemplate');
+    for (const { name, text } of SYSTEM_PROMPT_TEMPLATES) {
+        const option = document.createElement('option');
+        option.value = text;
+        option.textContent = name;
+        templateSelect.appendChild(option);
+    }
+    templateSelect.addEventListener('change', (event) => {
+        const select = event.currentTarget;
+        if (select.value) {
+            document.getElementById('systemPromptOverridePrompt').value = select.value;
+        }
+        // 重置为占位项，允许重复选择同一模板。
+        select.value = '';
+    });
+
+    // 系统提示词输入框：blur 时与权威快照不同则提交 prompt。
+    document.getElementById('systemPromptOverridePrompt').addEventListener('blur', async (event) => {
+        const textarea = event.currentTarget;
+        const snapshotPrompt = authoritativeSnapshot?.systemPromptOverride?.prompt;
+        if (textarea.value === snapshotPrompt) return;
+        saving = true;
+        setDisabled(true);
+        try {
+            await patchSetting('systemPromptOverride.prompt', textarea.value);
             show('设置已保存，将在下次启动会话生效');
         } catch (error) {
             if (authoritativeSnapshot) {

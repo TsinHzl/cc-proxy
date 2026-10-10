@@ -10,6 +10,7 @@ import {
 import { extractUsage, extractUsageFromResponseEvents, createUsageTracker } from './usage.js';
 import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
+import { buildOverriddenSystem } from './system-prompt.js';
 
 function parseEvent(raw) {
     const lines = raw.split('\n');
@@ -137,7 +138,9 @@ export function createProxyServer({
     debugLog,
     forwardSuggestionMode = false,
     thinkingAsText = true,
-    effortOverride = null
+    effortOverride = null,
+    systemPromptOverride = null,
+    systemPromptCapture = null
 } = {}) {
     const usage = usageTracker ?? null;
     // 关闭态 debug-log 的方法为 null，归一为可调用的空实现，调用点无需判空。
@@ -161,6 +164,15 @@ export function createProxyServer({
             if (isClaudeCode && bodyBuffer.length) {
                 try {
                     const parsed = JSON.parse(bodyBuffer.toString('utf8'));
+                    // Suggestion Mode 预筛后的捕获：非建议请求对覆写前的原始
+                    // system 捕获（先捕获后覆写、与开关状态无关——覆写开启期
+                    // 间继续捕获原始值，保证 CC 默认提示词变化时捕获文件仍能
+                    // 更新且不被自定义 prompt 污染）。捕获全程静默容错，不影响
+                    // 转发。复用本次 JSON.parse，不额外解析。
+                    if (systemPromptCapture && !bodyBuffer.includes(SUGGESTION_MARKER)
+                        && !isSuggestionModeRequest(parsed)) {
+                        systemPromptCapture.capture(parsed.system);
+                    }
                     if (Array.isArray(parsed?.messages)) {
                         parsed.messages = stripThinkingTextHistory(parsed.messages);
                         body = Buffer.from(JSON.stringify(parsed), 'utf8');
@@ -172,6 +184,18 @@ export function createProxyServer({
                         parsed.output_config = { ...parsed.output_config, effort: effortOverride.level };
                         parsed.effort = effortOverride.level;
                         body = Buffer.from(JSON.stringify(parsed), 'utf8');
+                    }
+                    // 系统提示词覆写：enabled 且 prompt 非空且原 system 存在时，
+                    // 将 system 替换为配置文本（保留原首块 cache_control）。
+                    // prompt 为空或 system 缺失时按 no-op 字节透传。
+                    const prompt = systemPromptOverride?.prompt;
+                    if (systemPromptOverride?.enabled && typeof prompt === 'string' && prompt
+                        && parsed.system !== undefined) {
+                        const overridden = buildOverriddenSystem(parsed.system, prompt);
+                        if (overridden !== null) {
+                            parsed.system = overridden;
+                            body = Buffer.from(JSON.stringify(parsed), 'utf8');
+                        }
                     }
                 } catch {
                     // Not JSON — forward verbatim.

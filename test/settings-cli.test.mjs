@@ -31,7 +31,7 @@ async function driveMenu(t, dir, keys) {
 test('settings menu: shows config path and exits without changes (esc)', async (t) => {
     const dir = tmpDir(t);
     const { config, output } = await driveMenu(t, dir, ['esc']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true, effortOverride: { enabled: true, level: 'high' } });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true, effortOverride: { enabled: true, level: 'high' }, systemPromptOverride: { enabled: false, prompt: '' } });
     assert.match(output, /配置文件: .*config\.json/);
     assert.match(output, /已退出/);
 });
@@ -39,7 +39,7 @@ test('settings menu: shows config path and exits without changes (esc)', async (
 test('settings menu: enter also exits without changes', async (t) => {
     const dir = tmpDir(t);
     const { config } = await driveMenu(t, dir, ['enter']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true, effortOverride: { enabled: true, level: 'high' } });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true, effortOverride: { enabled: true, level: 'high' }, systemPromptOverride: { enabled: false, prompt: '' } });
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false, 'no config written');
 });
 
