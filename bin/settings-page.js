@@ -318,6 +318,8 @@ const PAGE_SCRIPT = `
             = data.effortOverride?.level ?? 'high';
         document.getElementById('systemPromptOverridePrompt').value
             = data.systemPromptOverride?.prompt ?? '';
+        // 程序化回填（初次加载/保存后回填/失败回滚）不触发 input 事件，下拉需手动同步。
+        syncTemplateSelect();
     }
 
     function acceptSettings(data) {
@@ -481,14 +483,30 @@ const PAGE_SCRIPT = `
         option.textContent = name;
         templateSelect.appendChild(option);
     }
+    // 下拉选中项始终反映输入框当前内容：内容与某条模板一致时显示该模板名，
+    // 否则（手动修改、预填捕获提示词、空）回落占位项。value 存模板全文便于比对。
+    function syncTemplateSelect() {
+        const current = document.getElementById('systemPromptOverridePrompt').value;
+        let matched = '';
+        for (const option of templateSelect.options) {
+            if (option.value && option.value === current) {
+                matched = current;
+                break;
+            }
+        }
+        templateSelect.value = matched;
+    }
     templateSelect.addEventListener('change', (event) => {
         const select = event.currentTarget;
         if (select.value) {
             document.getElementById('systemPromptOverridePrompt').value = select.value;
         }
-        // 重置为占位项，允许重复选择同一模板。
-        select.value = '';
+        // 选择后保留所选模板名；输入框内容随后变化时由 input 事件同步。
+        syncTemplateSelect();
     });
+
+    // 输入框内容变化时同步下拉显示（手动编辑后不再匹配模板则回占位项）。
+    document.getElementById('systemPromptOverridePrompt').addEventListener('input', syncTemplateSelect);
 
     // 系统提示词输入框：blur 时与权威快照不同则提交 prompt。
     document.getElementById('systemPromptOverridePrompt').addEventListener('blur', async (event) => {

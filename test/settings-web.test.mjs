@@ -93,6 +93,11 @@ function createPageElement({ disabled = false } = {}) {
         disabled,
         value: '',
         textContent: '',
+        // select 元素模拟：appendChild 收集子 option，供 syncTemplateSelect 遍历比对。
+        options: [],
+        appendChild(child) {
+            this.options.push(child);
+        },
         classList: {
             toggle(name, force) {
                 const enabled = force ?? !classes.has(name);
@@ -104,7 +109,6 @@ function createPageElement({ disabled = false } = {}) {
         addEventListener(type, listener) {
             listeners.set(type, listener);
         },
-        appendChild() {},
         async dispatch(type) {
             await listeners.get(type)?.({ type, target: this, currentTarget: this });
         }
@@ -273,6 +277,41 @@ test('page script: waits for bootstrap and initial load before enabling switches
     assert.equal(page.elements.thinkingAsText.disabled, false);
     assert.equal(page.elements.effortOverrideEnabled.disabled, false);
     assert.equal(page.elements.effortOverrideLevel.disabled, false);
+});
+
+test('page script: applySettings backfill syncs template select display', async () => {
+    // 从渲染产物提取 SYSTEM_PROMPT_TEMPLATES，取「写作助手」全文构造回填场景。
+    const script = [...renderSettingsPage('vm-bootstrap').matchAll(/<script>([\s\S]*?)<\/script>/gi)][0][1];
+    const declStart = script.indexOf('const SYSTEM_PROMPT_TEMPLATES');
+    const declEnd = script.indexOf('];', declStart) + 2;
+    const templates = new Function(
+        script.slice(declStart, declEnd) + '; return SYSTEM_PROMPT_TEMPLATES;'
+    )();
+    const writer = templates.find(({ name }) => name === '写作助手');
+
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { token: 'vm-token' }
+            });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' },
+                systemPromptOverride: { enabled: true, prompt: writer.text }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    // 权威快照回填的 prompt 与模板全文一致：下拉应显示该模板名而非占位项。
+    assert.equal(page.elements.systemPromptOverridePrompt.value, writer.text);
+    assert.equal(page.elements.systemPromptTemplate.value, writer.text);
 });
 
 test('page script: PATCH uses authoritative data and failed save can retry', async () => {
