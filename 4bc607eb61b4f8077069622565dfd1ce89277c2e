@@ -1,0 +1,25 @@
+test/thinking-text.test.mjs
+  727a034631d893bc 22,24-27,164-201
+src/thinking-text.js
+  727a034631d893bc 129,138-140,144-149,197-200,240-244,246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "4bc607eb61b4f8077069622565dfd1ce89277c2e",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 78,
+      "total_deletions": 23,
+      "accepted_lines": 64,
+      "overriden_lines": 0
+    }
+  }
+}
