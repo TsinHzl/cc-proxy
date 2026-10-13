@@ -126,7 +126,7 @@ function isMatchingStop(event, index) {
  * Events not related to a thinking block pass through unchanged.
  *
  * @param {AsyncIterable<Object>} events - Anthropic-format SSE events
- * @param {{thinkingAsText?: boolean}} options
+ * @param {{thinkingAsText?: boolean, timeSource?: () => number}} options
  * @yields {Object} Anthropic-format SSE events
  */
 export async function* transformThinkingAsTextEvents(events, options = {}) {
@@ -135,10 +135,18 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         return;
     }
 
+    // 可注入时钟（测试用）；生产环境默认 Date.now。
+    const now = typeof options.timeSource === 'function' ? options.timeSource : Date.now;
+
     let pendingBlock = null;
     let responseThinkingBytes = 0;
     let responseLimitExceeded = false;
-    let blockStartedAtMs = null;
+    // Timer anchor for the "Thought for Xs" line. Set on the FIRST upstream SSE
+    // event (typically message_start), not on content_block_start: some
+    // third-party gateways buffer the whole thinking block and deliver its
+    // start/delta/stop in one burst at the end, so the block-start anchor would
+    // measure only ~1s of gateway flush instead of the real thinking time.
+    let responseStartedAtMs = null;
 
     const textDeltaEvent = (index, text) => ({
         type: 'content_block_delta',
@@ -186,6 +194,10 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     };
 
     for await (const event of events) {
+        // 首个上游事件即记录计时锚点（见 responseStartedAtMs 注释）。
+        if (responseStartedAtMs === null && event?.type) {
+            responseStartedAtMs = now();
+        }
         // Ping/pong 心跳事件透传，但绝不重置当前 thinking 块的跟踪状态：
         // 真实上游（如部分网关）会在 thinking 块中途插发 ping，若在此处
         // 丢失 pendingBlock，后续 signature_delta/stop 会作为孤儿事件泄漏
@@ -225,10 +237,13 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
             }
 
             if (isMatchingStop(event, pendingBlock.index)) {
-                const elapsedLine = blockStartedAtMs === null
+                // Response-start anchor: it covers the real wait time even
+                // when a gateway buffers the thinking block into a single
+                // burst.
+                const anchorMs = responseStartedAtMs;
+                const elapsedLine = anchorMs === null
                     ? null
-                    : formatDurationLine((Date.now() - blockStartedAtMs) / 1000);
-                blockStartedAtMs = null;
+                    : formatDurationLine((now() - anchorMs) / 1000);
                 if (!pendingBlock.discarded && pendingBlock.thinking) {
                     // Newline leads, never trails; blank lines are skipped so
                     // the block ends right after ANSI_RESET with no extra
@@ -277,7 +292,6 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         }
 
         if (isThinkingStart(event)) {
-            blockStartedAtMs = Date.now();
             pendingBlock = {
                 index: event.index,
                 thinking: '',

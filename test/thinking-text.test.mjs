@@ -19,9 +19,12 @@ const HEADER = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
 
 function ev(type, extra = {}) { return { type, ...extra }; }
 
-async function collect(events) {
+async function collect(events, { timeSource } = {}) {
     const out = [];
-    for await (const e of transformThinkingAsTextEvents(events, { thinkingAsText: true })) out.push(e);
+    for await (const e of transformThinkingAsTextEvents(events, {
+        thinkingAsText: true,
+        ...(timeSource ? { timeSource } : {})
+    })) out.push(e);
     return out;
 }
 
@@ -156,6 +159,44 @@ test('streaming: whitespace-only thinking block emits nothing (no orphan events)
     ];
     const out = await collect(events);
     assert.deepEqual(out, []);
+});
+
+// ---------- 流式：思考时长计时锚点 ----------
+
+test('streaming: duration anchor is the first SSE event (buffered-gateway burst)', async () => {
+    // 模拟缓冲型网关：message_start 先到，之后整个 thinking 块（start/delta/stop）
+    // 在真实思考 14s 后一次性突发达达。锚点应取 message_start 时刻，
+    // 否则观测的 start→stop 仅 ~0s。
+    const events = [
+        ev('message_start', { message: {} }),
+        ev('ping', {}),
+        ev('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'burst' } }),
+        ev('content_block_stop', { index: 0 }),
+        ev('message_stop')
+    ];
+    let tick = 0;
+    const out = await collect(events, {
+        timeSource: () => [0, 14000][tick++]
+    });
+    const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
+    assert.ok(texts.join('').includes('💭 Thought for 14s'), `expected 14s in: ${texts.join('')}`);
+});
+
+test('streaming: duration anchor is the first SSE event even without message_start', async () => {
+    // 无 message_start：首个事件是 content_block_start，它本身就是计时锚点
+    //（responseStartedAtMs 在任何首个带 type 的事件上赋值），stop 时刻与之差 5s。
+    const events = [
+        ev('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'hello\n' } }),
+        ev('content_block_stop', { index: 0 })
+    ];
+    let tick = 0;
+    const out = await collect(events, {
+        timeSource: () => [0, 5000][tick++]
+    });
+    const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
+    assert.ok(texts.join('').includes('💭 Thought for 5s'), `expected 5s in: ${texts.join('')}`);
 });
 
 test('streaming: non-thinking events pass through unchanged', async () => {
