@@ -183,6 +183,24 @@ test('streaming: duration anchor is the first SSE event (buffered-gateway burst)
     assert.ok(texts.join('').includes('💭 Thought for 14s'), `expected 14s in: ${texts.join('')}`);
 });
 
+test('streaming: startedAtMs request-arrival anchor covers full gateway buffering', async () => {
+    // 极端缓冲型网关：整个响应（含 message_start）在真实思考 14s 后才一次性
+    // 突发达达。请求级锚点 startedAtMs 应生效——stop 时刻距请求到达 14s，
+    // 而距首个流内事件仅 ~0s，任何流内锚点都测不出真实时长。
+    const events = [
+        ev('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'burst' } }),
+        ev('content_block_stop', { index: 0 })
+    ];
+    let tick = 0;
+    const out = await collect(events, {
+        startedAtMs: 1000,
+        timeSource: () => [1100, 15000][tick++]
+    });
+    const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
+    assert.ok(texts.join('').includes('💭 Thought for 14s'), `expected 14s in: ${texts.join('')}`);
+});
+
 test('streaming: duration anchor is the first SSE event even without message_start', async () => {
     // 无 message_start：首个事件是 content_block_start，它本身就是计时锚点
     //（responseStartedAtMs 在任何首个带 type 的事件上赋值），stop 时刻与之差 5s。

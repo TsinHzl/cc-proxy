@@ -126,7 +126,7 @@ function isMatchingStop(event, index) {
  * Events not related to a thinking block pass through unchanged.
  *
  * @param {AsyncIterable<Object>} events - Anthropic-format SSE events
- * @param {{thinkingAsText?: boolean, timeSource?: () => number}} options
+ * @param {{thinkingAsText?: boolean, timeSource?: () => number, startedAtMs?: number}} options
  * @yields {Object} Anthropic-format SSE events
  */
 export async function* transformThinkingAsTextEvents(events, options = {}) {
@@ -141,12 +141,16 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     let pendingBlock = null;
     let responseThinkingBytes = 0;
     let responseLimitExceeded = false;
-    // Timer anchor for the "Thought for Xs" line. Set on the FIRST upstream SSE
-    // event (typically message_start), not on content_block_start: some
-    // third-party gateways buffer the whole thinking block and deliver its
-    // start/delta/stop in one burst at the end, so the block-start anchor would
-    // measure only ~1s of gateway flush instead of the real thinking time.
-    let responseStartedAtMs = null;
+    // Timer anchor for the "Thought for Xs" line: the moment the request
+    // reached the proxy (options.startedAtMs), falling back to the first
+    // upstream SSE event. Gateway-side buffering must be included either way:
+    // some third-party gateways buffer the whole response — even message_start
+    // only arrives after thinking finished — so any stream-side anchor would
+    // measure ~1s of gateway flush instead of the real thinking time.
+    let responseStartedAtMs =
+        typeof options.startedAtMs === 'number' && Number.isFinite(options.startedAtMs)
+            ? options.startedAtMs
+            : null;
 
     const textDeltaEvent = (index, text) => ({
         type: 'content_block_delta',
@@ -194,7 +198,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
     };
 
     for await (const event of events) {
-        // 首个上游事件即记录计时锚点（见 responseStartedAtMs 注释）。
+        // 无请求级锚点时退回首个上游事件时刻（见 responseStartedAtMs 注释）。
         if (responseStartedAtMs === null && event?.type) {
             responseStartedAtMs = now();
         }

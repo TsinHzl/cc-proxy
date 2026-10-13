@@ -271,7 +271,11 @@ export function createProxyServer({
                 void (async () => {
                     try {
                         const collected = [];
-                        for await (const event of transformThinkingAsTextEvents(events, { thinkingAsText })) {
+                        // 计时锚点：请求到达代理的时刻，把网关侧缓冲也计入思考时长。
+                        for await (const event of transformThinkingAsTextEvents(events, {
+                            thinkingAsText,
+                            startedAtMs: requestStartedAt.getTime()
+                        })) {
                             if (usage || logStream) {
                                 // message_start/message_delta 之外的样本不参与统计，仅必要时保留以省内存。
                                 if (event.type === 'message_start' || event.type === 'message_delta') collected.push(event);
