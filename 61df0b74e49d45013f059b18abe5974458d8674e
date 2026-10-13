@@ -1,0 +1,40 @@
+src/proxy.js
+  727a034631d893bc 274-278
+src/thinking-text.js
+  727a034631d893bc 129,144-153,201
+test/thinking-text.test.mjs
+  727a034631d893bc 186-203
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "61df0b74e49d45013f059b18abe5974458d8674e",
+  "prompts": {
+    "15d360604b3b0166": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70e746e8-d064-4f27-a40c-94ee4ba0b414",
+        "model": "gemini-3.8-flash-tiered"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 101,
+      "total_deletions": 0,
+      "accepted_lines": 101,
+      "overriden_lines": 0
+    },
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 35,
+      "total_deletions": 9,
+      "accepted_lines": 35,
+      "overriden_lines": 0
+    }
+  }
+}
