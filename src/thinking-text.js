@@ -12,6 +12,16 @@ const ANSI_RESET = '\x1b[0m';
 const THINKING_TEXT_HEADER_LINE = `${ANSI_DIM}💭 Thinking${ANSI_RESET}`;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const THINKING_TEXT_LINE_RE = `\\n${escapeRegExp(ANSI_DIM)}[^\\n]*?${escapeRegExp(ANSI_RESET)}`;
+// Duration line is stripped as its own pass (not folded into the block regex):
+// a combined `HEADER(?:LINE)*DURATION?` makes the optional group fail on
+// blocks without a duration line. It eats one trailing newline — the streaming
+// side emits a trailing '\n' after the duration line because Claude Code's
+// recap concatenates this text block with the next one (the answer); without
+// it the "💭 Thought for Xs" line and the answer render on the same line.
+const THINKING_TEXT_DURATION_LINE_RE = new RegExp(
+    `\\n?${escapeRegExp(ANSI_DIM)}💭 Thought for (?:\\d+m)?\\d+s${escapeRegExp(ANSI_RESET)}\\n?`,
+    'g'
+);
 const THINKING_TEXT_BLOCK_RE = new RegExp(
     `${escapeRegExp(THINKING_TEXT_HEADER_LINE)}(?:${THINKING_TEXT_LINE_RE})*`,
     'g'
@@ -82,6 +92,7 @@ export function stripThinkingTextHistory(messages) {
                     // match the dim header inside a quoted block and break it up.
                     .replace(QUOTED_THINKING_TEXT_BLOCK_RE, '')
                     .replace(THINKING_TEXT_BLOCK_RE, '')
+                    .replace(THINKING_TEXT_DURATION_LINE_RE, '')
                     .replace(LEGACY_THINKING_TEXT_BLOCK_RE, '')
             };
         }
@@ -94,6 +105,7 @@ export function stripThinkingTextHistory(messages) {
                 // Quoted format first: see strip order note above.
                 .replace(QUOTED_THINKING_TEXT_BLOCK_RE, '')
                 .replace(THINKING_TEXT_BLOCK_RE, '')
+                .replace(THINKING_TEXT_DURATION_LINE_RE, '')
                 .replace(LEGACY_THINKING_TEXT_BLOCK_RE, '');
             return text ? [{ ...block, text }] : [];
         });
@@ -258,7 +270,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                         tail = `${pendingBlock.firstChunk ? THINKING_TEXT_HEADER_LINE : ''}\n${ANSI_DIM}${lastLine}${ANSI_RESET}`;
                         pendingBlock.pending = '';
                     }
-                    if (tail && elapsedLine) tail += `\n${elapsedLine}`;
+                    if (tail && elapsedLine) tail += `\n${elapsedLine}\n`;
                     // Whitespace-only block with nothing emitted: skip the
                     // stop event too, so the client never sees an orphan
                     // content_block_stop without its content_block_start.
@@ -280,6 +292,16 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                             // duration line starts fresh (byte-compatible with
                             // agy-cc-proxy).
                             yield textDeltaEvent(pendingBlock.index, `\n${elapsedLine}`);
+                        }
+                        // Trailing newline after the duration line: Claude
+                        // Code's recap concatenates this text block with the
+                        // next text block (the answer); without it the
+                        // duration line and the answer share a line. Streaming
+                        // rendering is unaffected — the reset already ended
+                        // the line visually. When the tail already carries the
+                        // duration line it ends with '\n' (no separate event).
+                        if (elapsedLine && !tail) {
+                            yield textDeltaEvent(pendingBlock.index, '\n');
                         }
                         yield event;
                     }
