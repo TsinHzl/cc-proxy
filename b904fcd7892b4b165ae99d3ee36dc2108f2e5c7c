@@ -1,0 +1,55 @@
+src/usage.js
+  727a034631d893bc 85,91-92,96-116,119-133,137,143-145,149-152,154-155
+bin/claude-proxy.js
+  727a034631d893bc 13,55-57,73-86,112-119
+test/proxy-usage-debug.test.mjs
+  727a034631d893bc 43,68-77,89,110
+test/pricing.test.mjs
+  727a034631d893bc 1-70
+bin/settings-page.js
+  727a034631d893bc 82-93,169-174,612-737,740
+README.md
+  727a034631d893bc 64,148-151,158-178,211-212
+src/pricing.js
+  727a034631d893bc 1-62
+src/settings.js
+  727a034631d893bc 20-26,50-52,81-109,145-153
+README.en.md
+  727a034631d893bc 67-68,156-159,168-201,235-236
+test/usage.test.mjs
+  727a034631d893bc 78-87,113-210
+src/logger.js
+  727a034631d893bc 6-8
+src/proxy.js
+  727a034631d893bc 64-72,80,82-83,85,97,99,258,269,297-302
+test/settings.test.mjs
+  727a034631d893bc 13-15,75-77,246-330
+test/settings-cli.test.mjs
+  727a034631d893bc 34,42
+test/cli.test.mjs
+  727a034631d893bc 10,75-76,93-199
+test/settings-web.test.mjs
+  727a034631d893bc 57-69,114-119,189-190,204-205,258-263,283,706,718,1209-1211,2869,2878-2955
+bin/settings-web.js
+  727a034631d893bc 5-6,379-421,448-463,673
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "b904fcd7892b4b165ae99d3ee36dc2108f2e5c7c",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 1153,
+      "total_deletions": 134,
+      "accepted_lines": 1064,
+      "overriden_lines": 1
+    }
+  }
+}
