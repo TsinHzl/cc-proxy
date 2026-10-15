@@ -11,6 +11,7 @@ import { extractUsage, extractUsageFromResponseEvents, createUsageTracker } from
 import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
 import { buildOverriddenSystem } from './system-prompt.js';
+import { createLatencyTracker } from './latency.js';
 
 function parseEvent(raw) {
     const lines = raw.split('\n');
@@ -145,6 +146,7 @@ function createEventIterator(upstreamRes) {
 export function createProxyServer({
     baseUrlEnv,
     usageTracker,
+    latencyTracker = createLatencyTracker(),
     debugLog,
     forwardSuggestionMode = false,
     thinkingAsText = true,
@@ -264,10 +266,28 @@ export function createProxyServer({
                 }
             }
 
+            // 采样防重：sampled 标志覆盖成功收尾与连接错误回调；ttfbAt 由
+            // 响应回调写入（上游响应头到达，含 failover 重试耗时，即用户
+            // 感知的首字节口径），连接失败路径保持 0（无真实 TTFB）。
+            let sampled = false;
+            let ttfbAt = 0;
+            const recordLatency = (status) => {
+                if (sampled) return;
+                sampled = true;
+                // 失败路径（status 0）没有真实 TTFB，ttftMs 恒为 ~0，仅 totalMs
+                // 反映实际等待/失败耗时；status 0 表示该样本不计入首字节口径。
+                latencyTracker.sample({
+                    ttftMs: ttfbAt ? ttfbAt - requestStartedAt.getTime() : 0,
+                    totalMs: Date.now() - requestStartedAt.getTime(),
+                    status
+                });
+            };
+
             forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
                 const logStream = dbg.requestStart(req, bodyBuffer);
+                ttfbAt = Date.now();
 
                 // Non-CC clients: everything verbatim.
                 if (!isClaudeCode) {
@@ -275,9 +295,9 @@ export function createProxyServer({
                     upstreamRes.pipe(res);
                     // 收尾覆盖正常结束 / 上游错误 / 客户端断开三条路径，
                     // 防止日志写流未关闭导致 fd 泄漏（requestEnd 幂等）。
+                    // 非 CC UA 为原样透传路径，不参与延迟统计（提案范围外）。
                     const finishLog = () => dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     upstreamRes.on('end', finishLog);
-                    upstreamRes.on('error', finishLog);
                     res.on('close', finishLog);
                     return;
                 }
@@ -287,7 +307,12 @@ export function createProxyServer({
                 if (!responseIsSse) {
                     const bodyChunks = [];
                     upstreamRes.on('data', (c) => bodyChunks.push(c));
-                    upstreamRes.on('error', () => { if (!res.headersSent) res.end(); });
+                    // 失败路径也采样（status 0 = 无有效响应哨兵），避免失败请求
+                    // 从统计中静默消失导致 p50/p95 偏乐观。
+                    upstreamRes.on('error', () => {
+                        recordLatency(0);
+                        if (!res.headersSent) res.end();
+                    });
                     upstreamRes.on('end', () => {
                         const { body: out, usage: respUsage, model: parsedModel } = transformNonStreamingResponse(
                             Buffer.concat(bodyChunks),
@@ -301,6 +326,7 @@ export function createProxyServer({
                         res.writeHead(upstreamRes.statusCode, headers);
                         res.end(out);
                         if (usage) usage.record(respUsage, parsedModel);
+                        recordLatency(upstreamRes.statusCode);
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     });
                     return;
@@ -334,10 +360,13 @@ export function createProxyServer({
                                 extractModelFromResponseEvents(collected)
                             );
                         }
+                        recordLatency(upstreamRes.statusCode);
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     } catch (err) {
                         logger.error('[cc-proxy] stream transform failed:', err.message);
                         res.end();
+                        // 流已失败，状态码不再可信，记 0 哨兵而非上游 200。
+                        recordLatency(0);
                         dbg.requestEnd(logStream, `error: ${err.message}`, requestStartedAt);
                     }
                 })();
@@ -346,6 +375,8 @@ export function createProxyServer({
                 // 连接级失败（未收到上游响应）也落盘：排查网关兼容性最需要这段。
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 dbg.requestEnd(logStream, `upstream error: ${err.message}`, requestStartedAt);
+                // 连接失败同样计入延迟统计（status 0 = 无有效响应哨兵）。
+                recordLatency(0);
                 if (res.headersSent) { res.end(); return; }
                 res.writeHead(502, { 'content-type': 'application/json' });
                 res.end(JSON.stringify({

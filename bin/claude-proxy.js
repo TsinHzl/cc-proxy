@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
 import { createUsageTracker } from '../src/usage.js';
+import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
 import { cacheHitRate } from '../src/pricing.js';
 import { readConfig } from '../src/settings.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
@@ -54,6 +55,7 @@ export function main({
     createProxy = createProxyServer,
     spawnProcess = spawn,
     createTracker = createUsageTracker,
+    createLatency = createLatencyTracker,
     warn = (msg) => logger.warn(msg)
 } = {}) {
     // --version/-v: print version and exit, no proxy/claude started.
@@ -71,6 +73,7 @@ export function main({
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
     const usageTracker = createTracker();
+    const latencyTracker = createLatency();
     const settings = readSettings();
     const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = settings;
     // 当日用量告警：仅当 config 配置了 alerts.dailyTokens（> 0）且当日累计
@@ -87,6 +90,7 @@ export function main({
     const server = createProxy({
         baseUrlEnv: originalBase,
         usageTracker,
+        latencyTracker,
         forwardSuggestionMode,
         thinkingAsText,
         effortOverride,
@@ -125,6 +129,9 @@ export function main({
                 warn(
                     `[claude-proxy] usage ${s.day}: ${s.requests} reqs, in ${s.inputTokens}, out ${s.outputTokens}, cache-read ${s.cacheReadTokens}, cache-create ${s.cacheCreationTokens}, cache-hit ${hitRateText}`
                 );
+                // 延迟汇总行：无样本（无请求或全部被拦截）时 null，不输出。
+                const latencyLine = formatLatencySummary(latencyTracker.summary());
+                if (latencyLine) warn(`[claude-proxy] ${latencyLine}`);
             }
             server.close();
             if (signal) process.kill(process.pid, signal);
