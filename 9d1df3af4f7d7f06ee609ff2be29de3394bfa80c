@@ -1,0 +1,31 @@
+bin/claude-proxy.js
+  727a034631d893bc 13,58,76,93,132-134
+test/latency-proxy.test.mjs
+  727a034631d893bc 1-104
+src/latency.js
+  727a034631d893bc 1-47
+src/proxy.js
+  727a034631d893bc 14,149,269-285,290,298,310-315,329,363,368-369,378-379
+test/latency.test.mjs
+  727a034631d893bc 1-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "9d1df3af4f7d7f06ee609ff2be29de3394bfa80c",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 328,
+      "total_deletions": 30,
+      "accepted_lines": 301,
+      "overriden_lines": 0
+    }
+  }
+}
