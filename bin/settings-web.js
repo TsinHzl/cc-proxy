@@ -420,6 +420,22 @@ function buildUsageReport(envDir, read) {
     };
 }
 
+// 导出 CSV：与 /api/usage 的 days 数组同源同值，cost 为 null（费用不可估）时输出空串。
+function usageExportCsv(days) {
+    const header = 'date,requests,inputTokens,outputTokens,'
+        + 'cacheReadTokens,cacheCreationTokens,cost';
+    const lines = days.map((day) => [
+        day.date,
+        day.requests,
+        day.inputTokens,
+        day.outputTokens,
+        day.cacheReadTokens,
+        day.cacheCreationTokens,
+        day.cost === null ? '' : day.cost
+    ].join(','));
+    return [header, ...lines].join('\n') + '\n';
+}
+
 async function handleSettingsApiRequest(
     context,
     req,
@@ -460,6 +476,38 @@ async function handleSettingsApiRequest(
             ok: true,
             data: buildUsageReport(context.envDir, context.read)
         });
+        return;
+    }
+    if (url.pathname === '/api/usage/export') {
+        if (req.method !== 'GET') {
+            sendJson(
+                res,
+                405,
+                { ok: false, error: '请求方法不支持' },
+                { allow: 'GET' }
+            );
+            return;
+        }
+        const report = buildUsageReport(context.envDir, context.read);
+        if (url.searchParams.get('format') === 'csv') {
+            const body = usageExportCsv(report.days);
+            res.writeHead(200, commonHeaders({
+                'content-type': 'text/csv; charset=utf-8',
+                'content-disposition':
+                    'attachment; filename="cc-proxy-usage.csv"',
+                'content-length': Buffer.byteLength(body)
+            }));
+            res.end(body);
+            return;
+        }
+        if (url.searchParams.get('format') === 'json') {
+            sendJson(res, 200, {
+                ok: true,
+                data: report
+            });
+            return;
+        }
+        sendJson(res, 400, { ok: false, error: 'format 参数仅支持 csv 或 json' });
         return;
     }
     if (url.pathname !== '/api/settings') {

@@ -2876,6 +2876,110 @@ test('API: /api/usage alert exceeded when threshold configured', async (t) => {
     assert.deepEqual(data.alert, { dailyTokens: 100, exceeded: true });
 });
 
+test('API: GET /api/usage/export supports csv and json, rejects unknown format', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-usage-export-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const usageFile = path.join(home, '.cc-proxy', 'usage.json');
+    fs.mkdirSync(path.dirname(usageFile), { recursive: true });
+    const dayKey = (offset) => {
+        const d = new Date();
+        d.setDate(d.getDate() - offset);
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${d.getFullYear()}-${m}-${day}`;
+    };
+    // 今日 claude-sonnet-5 可定价 + 昨日无模型（cost 为 null → CSV 空列）。
+    fs.writeFileSync(usageFile, JSON.stringify({
+        [dayKey(0)]: {
+            requests: 2, inputTokens: 100, outputTokens: 50,
+            cacheReadTokens: 40, cacheCreationTokens: 10,
+            byModel: {
+                'claude-sonnet-5': {
+                    requests: 2, inputTokens: 100,
+                    outputTokens: 50, cacheReadTokens: 40, cacheCreationTokens: 10
+                }
+            }
+        },
+        [dayKey(1)]: { requests: 1, inputTokens: 10, outputTokens: 5 }
+    }));
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            alerts: { dailyTokens: 0 },
+            models: {}
+        }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    // CSV：表头 + 30 行（近 30 天每天一行，含无数据日）。
+    const csvRes = await fetch(
+        `${api.origin}/api/usage/export?format=csv`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(csvRes.status, 200);
+    assert.ok(
+        csvRes.headers.get('content-type').startsWith('text/csv')
+    );
+    const csvText = await csvRes.text();
+    const csvLines = csvText.trimEnd().split('\n');
+    assert.equal(csvLines.length, 31);
+    assert.equal(
+        csvLines[0],
+        'date,requests,inputTokens,outputTokens,'
+            + 'cacheReadTokens,cacheCreationTokens,cost'
+    );
+    // cost 列经 estimateCost 逐维度累加，存在浮点尾差，按数值近似比较。
+    const expectedCost = (100 * 3 + 50 * 15 + 40 * 0.3 + 10 * 3.75) / 1e6;
+    const todayCells = csvLines[1].split(',');
+    assert.deepEqual(
+        todayCells.slice(0, 6),
+        [dayKey(0), '2', '100', '50', '40', '10']
+    );
+    assert.ok(Math.abs(Number(todayCells[6]) - expectedCost) < 1e-12);
+    assert.equal(csvLines[2], `${dayKey(1)},1,10,5,0,0,`);
+
+    // JSON：与 /api/usage 数据结构一致。
+    const jsonRes = await fetch(
+        `${api.origin}/api/usage/export?format=json`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(jsonRes.status, 200);
+    assert.ok(
+        jsonRes.headers.get('content-type').startsWith('application/json')
+    );
+    const exportBody = await jsonRes.json();
+    const usageRes = await fetch(`${api.origin}/api/usage`, {
+        headers: authHeaders(api)
+    });
+    const usageBody = await usageRes.json();
+    assert.deepEqual(exportBody, usageBody);
+
+    // 未知 format → 400。
+    const badRes = await fetch(
+        `${api.origin}/api/usage/export?format=xml`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(badRes.status, 400);
+    const noFormatRes = await fetch(
+        `${api.origin}/api/usage/export`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(noFormatRes.status, 400);
+
+    // 非 GET → 405。
+    const postRes = await fetch(
+        `${api.origin}/api/usage/export?format=csv`,
+        { method: 'POST', headers: authHeaders(api) }
+    );
+    assert.equal(postRes.status, 405);
+});
+
 test('page script: renderUsageBoard renders bars, summary and per-model table', async () => {
     const page = createPageHarness(({ url }) => {
         if (url === '/api/bootstrap') {
