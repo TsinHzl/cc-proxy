@@ -11,7 +11,7 @@
 
 ### F2 上游健康面板（被动统计）
 - [x] T4 新增 `src/upstream-health.js`：记录各上游请求成功/失败、TTFT（样本限最近 500/上游）、次数，提供 `getHealthSnapshot()`（含 p50/p95）；快照防抖落盘到 `~/.cc-proxy/runtime/upstream-health.json`（tmp+rename 原子替换，500ms 合并写，进程退出 flush）；proxy.js 故障转移处埋点记录切换事件（时间+原因，环形 20 条）——验证：单元测试覆盖记录、百分位、切换事件与落盘/损坏文件回退
-- [ ] T5 新增 `GET /api/upstream-health`（settings-web 读落盘快照文件，缺失/损坏返回空快照）+ 设置页"上游状态"卡片（活跃上游、各上游成功率/TTFT/次数、最近切换）；渲染函数遵守 ≤800 行——验证：API 测试（含空快照分支）+ 页面节点断言
+- [x] T5 新增 `GET /api/upstream-health`（settings-web 读落盘快照文件，缺失/损坏返回空快照）+ 设置页"上游状态"卡片（活跃上游、各上游成功率/TTFT/次数、最近切换）；渲染函数遵守 ≤800 行——验证：API 测试（含空快照分支）+ 页面节点断言
 
 ### F3 存储优化（node:sqlite + JSON 回退）
 - [ ] T6 新增 `src/usage-store.js` 抽象层：`createUsageStore({file, sqliteModule?})` 动态 import('node:sqlite') 特性探测（不依赖版本号，可注入），成功用 SQLite（`PRAGMA journal_mode=WAL`+`busy_timeout=5000`，含按天/按小时聚合表）、失败回退 JSON——验证：注入桩强制两模式对照测试（同一 record 输入 → readRecentDays/summary 结构一致）
