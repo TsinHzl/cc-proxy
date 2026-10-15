@@ -224,6 +224,16 @@ export const USAGE_BOARD_SCRIPT = `
         }
     }
 
+    // 存储模式标注：sqlite / json（与代理运行时同一落盘层的模式）。
+    function renderStorageBadge(board, mode) {
+        if (mode !== 'sqlite' && mode !== 'json') return;
+        const badge = document.createElement('p');
+        badge.className = 'usage-storage';
+        badge.setAttribute('data-storage', mode);
+        badge.textContent = '存储模式：' + (mode === 'sqlite' ? 'SQLite' : 'JSON');
+        board.appendChild(badge);
+    }
+
     function renderUsageBoard(data) {
         const board = document.getElementById('usageBoard');
         board.textContent = '';
@@ -233,6 +243,7 @@ export const USAGE_BOARD_SCRIPT = `
         usageAlert = alert;
         renderUsageTabs(board);
         renderUsageExport(board);
+        renderStorageBadge(board, data?.storage);
         if (days.length === 0) {
             const empty = document.createElement('p');
             empty.className = 'usage-empty';

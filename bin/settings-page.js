@@ -102,6 +102,7 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-export { display: flex; gap: 6px; margin: 0 4px 8px; }
 .usage-export-btn { padding: 3px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
 .usage-export-btn:hover { border-color: var(--accent); color: var(--accent); }
+.usage-storage { margin: 0 4px 8px; font-size: 12px; color: var(--muted); }
 @media (max-width: 640px) {
     main { width: calc(100% - 24px); padding: 12px 0; }
     header { display: block; }

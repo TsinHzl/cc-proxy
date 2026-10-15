@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
-import { createUsageTracker } from '../src/usage.js';
+import { createUsageStore, importJsonHistory } from '../src/usage-store.js';
 import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
 import { createUpstreamHealthTracker } from '../src/upstream-health.js';
 import { cacheHitRate } from '../src/pricing.js';
@@ -49,13 +49,14 @@ export function isDirectExecution({
     }
 }
 
-export function main({
+export async function main({
     argv = process.argv,
     runSettings = runSettingsWeb,
     readSettings = readConfig,
     createProxy = createProxyServer,
     spawnProcess = spawn,
-    createTracker = createUsageTracker,
+    createTracker = createUsageStore,
+    importHistory = importJsonHistory,
     createLatency = createLatencyTracker,
     warn = (msg) => logger.warn(msg)
 } = {}) {
@@ -73,7 +74,12 @@ export function main({
 
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
-    const usageTracker = createTracker();
+    // 历史 usage.json 导入（design D1）：早于任何请求转发，同步串行完成。
+    // 导入失败 → 本次运行强制 JSON 模式（sqliteModule: null），原文件保留。
+    const importResult = await importHistory();
+    const usageTracker = await createTracker(
+        importResult.ok ? undefined : { sqliteModule: null }
+    );
     const latencyTracker = createLatency();
     // 上游健康统计（被动埋点）：防抖落盘 ~/.cc-proxy/runtime/upstream-health.json，
     // 供设置页 /api/upstream-health 只读展示。

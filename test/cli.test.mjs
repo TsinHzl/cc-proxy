@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDirectExecution, main } from '../bin/claude-proxy.js';
 import { createUsageTracker } from '../src/usage.js';
+import { importJsonHistory } from '../src/usage-store.js';
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'claude-proxy.js');
 
@@ -56,7 +57,7 @@ test('direct execution returns false for a different entry', () => {
     }), false);
 });
 
-test('normal startup injects both persisted proxy settings', () => {
+test('normal startup injects both persisted proxy settings', async () => {
     let proxyOptions = null;
     let spawnOptions = null;
     const server = new EventEmitter();
@@ -67,7 +68,7 @@ test('normal startup injects both persisted proxy settings', () => {
     server.address = () => ({ port: 4321 });
     server.close = () => {};
 
-    main({
+    await main({
         argv: ['node', BIN],
         readSettings: () => ({
             forwardSuggestionMode: true,
@@ -91,7 +92,7 @@ test('normal startup injects both persisted proxy settings', () => {
     assert.equal(spawnOptions.env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4321');
 });
 
-test('startup banner warns when today usage exceeds alerts.dailyTokens', (t) => {
+test('startup banner warns when today usage exceeds alerts.dailyTokens', async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-usage-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const usageFile = path.join(dir, 'usage.json');
@@ -110,10 +111,11 @@ test('startup banner warns when today usage exceeds alerts.dailyTokens', (t) => 
     server.address = () => ({ port: 4321 });
     server.close = () => {};
 
-    main({
+    await main({
         argv: ['node', BIN],
         readSettings: () => ({ alerts: { dailyTokens: 500 } }),
-        createTracker: () => createUsageTracker({ usageFile }),
+        createTracker: (opts) => createUsageTracker({ usageFile, ...opts }),
+        importHistory: async () => ({ ok: true, imported: 0 }),
         createProxy: () => server,
         spawnProcess: () => new EventEmitter(),
         warn: (msg) => warnings.push(msg)
@@ -146,7 +148,8 @@ test('no warning when usage under threshold or alerts unconfigured', (t) => {
         main({
             argv: ['node', BIN],
             readSettings: () => ({ alerts }),
-            createTracker: () => createUsageTracker({ usageFile }),
+            createTracker: (opts) => createUsageTracker({ usageFile, ...opts }),
+        importHistory: async () => ({ ok: true, imported: 0 }),
             createProxy: () => server,
             spawnProcess: () => new EventEmitter(),
             warn: (msg) => warnings.push(msg)
@@ -155,7 +158,7 @@ test('no warning when usage under threshold or alerts unconfigured', (t) => {
     }
 });
 
-test('exit summary includes cache-hit rate, n/a when no denominator', (t) => {
+test('exit summary includes cache-hit rate, n/a when no denominator', async (t) => {
     // exit 总结计算被 logger.enabled 守门；测试开启 CC_PROXY_LOG 以触发输出。
     process.env.CC_PROXY_LOG = '1';
     t.after(() => { delete process.env.CC_PROXY_LOG; });
@@ -170,10 +173,11 @@ test('exit summary includes cache-hit rate, n/a when no denominator', (t) => {
     server.close = () => {};
 
     let child;
-    main({
+    await main({
         argv: ['node', BIN],
         readSettings: () => ({ alerts: { dailyTokens: 0 } }),
-        createTracker: () => createUsageTracker({ usageFile }),
+        createTracker: (opts) => createUsageTracker({ usageFile, ...opts }),
+        importHistory: async () => ({ ok: true, imported: 0 }),
         createProxy: () => server,
         spawnProcess: () => {
             child = new EventEmitter();

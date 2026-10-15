@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createUsageStore } from '../src/usage-store.js';
+import { createUsageStore, importJsonHistory } from '../src/usage-store.js';
 
 let sqliteModule = null;
 try {
@@ -200,4 +200,119 @@ test('usage-store: record 失败时 CC_PROXY_DEBUG 通道落盘错误行', { ski
     store.record({ inputTokens: 3 }, 'm');
     const content = fs.readFileSync(path.join(dbgDir, 'usage-store.log'), 'utf8');
     assert.ok(content.includes('record failed: disk I/O error'));
+});
+
+// ---------- importJsonHistory（tasks.md T7）----------
+
+// 构造历史 usage.json 内容（usage.js 落盘格式：{ 'YYYY-MM-DD': day }）。
+function writeHistory(file, days) {
+    fs.writeFileSync(file, JSON.stringify(days), { mode: 0o600 });
+}
+
+test('importJsonHistory: 历史 usage.json 单事务导入 SQLite 并 rename .imported', { skip: !sqliteModule }, async (t) => {
+    const file = tmpFile(t, 'usage.json');
+    const dbFile = tmpFile(t, 'usage.db');
+    writeHistory(file, {
+        '2026-10-01': {
+            requests: 2, inputTokens: 10, outputTokens: 20,
+            cacheReadTokens: 3, cacheCreationTokens: 1,
+            byModel: {
+                'claude-sonnet-5': {
+                    requests: 2, inputTokens: 10, outputTokens: 20,
+                    cacheReadTokens: 3, cacheCreationTokens: 1
+                }
+            }
+        },
+        '2026-10-02': { requests: 1, inputTokens: 5 }, // 缺失字段按 0
+        'bogus-day': null // 非法日条目跳过（normalizeDayCompat → null）
+    });
+
+    const result = await importJsonHistory({ file, dbFile, sqliteModule, now });
+    assert.deepEqual(result, { ok: true, imported: 2 });
+    // 原文件已改名为 .imported 备份。
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.existsSync(`${file}.imported`), true);
+
+    // 导入结果经 SQLite 可查：与既有 store 读路径同源（同一 dbFile 打开）。
+    const store = await createUsageStore({ file: dbFile, now, sqliteModule });
+    assert.equal(store.mode, 'sqlite');
+    const days = store.readRecentDays(30);
+    const oct1 = days.find((d) => d.date === '2026-10-01');
+    assert.ok(oct1, '2026-10-01 应在近 30 天内（FIXED=2026-10-15）');
+    assert.equal(oct1.requests, 2);
+    assert.equal(oct1.inputTokens, 10);
+    assert.equal(oct1.outputTokens, 20);
+    assert.equal(oct1.cacheReadTokens, 3);
+    assert.equal(oct1.cacheCreationTokens, 1);
+    assert.equal(oct1.byModel['claude-sonnet-5'].requests, 2);
+    const oct2 = days.find((d) => d.date === '2026-10-02');
+    assert.equal(oct2.requests, 1);
+    assert.equal(oct2.inputTokens, 5);
+});
+
+test('importJsonHistory: 事务失败注入 → 原文件保留、返回 ok:false', { skip: !sqliteModule }, async (t) => {
+    const file = tmpFile(t, 'usage.json');
+    const history = { '2026-10-01': { requests: 1, inputTokens: 7 } };
+    writeHistory(file, history);
+
+    // 桩：db.exec 在 COMMIT（第二次 exec）时抛错，模拟事务提交失败。
+    let execCount = 0;
+    const failing = {
+        DatabaseSync: class {
+            exec(sql) {
+                execCount += 1;
+                if (execCount >= 3) throw new Error('COMMIT failed'); // SCHEMA/PRAGMA 后的 BEGIN/COMMIT
+            }
+            prepare() {
+                return {
+                    run: () => {},
+                    get: () => null,
+                    all: () => []
+                };
+            }
+        }
+    };
+    const result = await importJsonHistory({ file, sqliteModule: failing, now });
+    assert.deepEqual(result, { ok: false, imported: 0 });
+    // 原文件保留、未生成 .imported。
+    assert.equal(fs.existsSync(file), true);
+    assert.equal(fs.existsSync(`${file}.imported`), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), history);
+});
+
+test('importJsonHistory: JSON 模式直通（sqliteModule=null / 文件缺失 / 损坏）', async (t) => {
+    // sqliteModule=null：无可导入目标，视为成功。
+    assert.deepEqual(
+        await importJsonHistory({ file: tmpFile(t, 'a.json'), sqliteModule: null, now }),
+        { ok: true, imported: 0 }
+    );
+    // 文件缺失：无可导入数据，不算失败。
+    assert.deepEqual(
+        await importJsonHistory({
+            file: tmpFile(t, 'missing.json'), sqliteModule, now
+        }),
+        { ok: true, imported: 0 }
+    );
+    // 损坏 JSON：读不出结构 → null → 直通。
+    const bad = tmpFile(t, 'bad.json');
+    fs.writeFileSync(bad, '{not json', { mode: 0o600 });
+    assert.deepEqual(
+        await importJsonHistory({ file: bad, sqliteModule, now }),
+        { ok: true, imported: 0 }
+    );
+});
+
+test('importJsonHistory: SQLite 打不开 → ok:false 且原文件保留', { skip: !sqliteModule }, async (t) => {
+    const file = tmpFile(t, 'usage.json');
+    writeHistory(file, { '2026-10-01': { requests: 1 } });
+    // 桩：DatabaseSync 构造即抛错（打开失败路径）。
+    const broken = {
+        DatabaseSync: class {
+            constructor() { throw new Error('cannot open'); }
+        }
+    };
+    const result = await importJsonHistory({ file, sqliteModule: broken, now });
+    assert.deepEqual(result, { ok: false, imported: 0 });
+    assert.equal(fs.existsSync(file), true);
+    assert.equal(fs.existsSync(`${file}.imported`), false);
 });

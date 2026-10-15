@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readConfig, writeConfig } from '../src/settings.js';
 import { defaultUsagePath, readRecentDays } from '../src/usage.js';
+import { createUsageStore } from '../src/usage-store.js';
 import { readHealthSnapshot, defaultHealthPath } from '../src/upstream-health.js';
 import { estimateCost, cacheHitRate, computeUsageAlert } from '../src/pricing.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
@@ -381,11 +382,16 @@ async function handleSettingsPatch(context, req, res, host) {
 // 前端按 Tab（今日/七天/一个月）切片渲染。
 // 费用为保守估算：任一模型定价缺失即整日费用置 null（未知价模型费用不可信，
 // 部分求和会低估），全部模型可定价才给出总和；当日无任何模型时 cost 为 null。
-// 注：用量数据固定读全局 ~/.cc-proxy/usage.json（不做 envDir 覆盖），
-// 与 config 的 envDir 语义独立 —— 用量始终全局累计。
-function buildUsageReport(envDir, read) {
+// 注：用量数据固定读全局 ~/.cc-proxy（不做 envDir 覆盖），与 config 的 envDir
+// 语义独立 —— 用量始终全局累计。usageStore 为注入的存储抽象层（缺省时回退
+// 现有同步 JSON 读取，保持直连 createSettingsHandler 的调用兼容）；storage
+// 为当前落盘模式（sqlite|json），无 store 时为 undefined。
+function buildUsageReport(envDir, read, usageStore) {
     const config = read();
-    const days = readRecentDays(defaultUsagePath(), 30).map((day) => {
+    const rawDays = usageStore
+        ? usageStore.readRecentDays(30)
+        : readRecentDays(defaultUsagePath(), 30);
+    const days = rawDays.map((day) => {
         let cost = null;
         const models = Object.keys(day.byModel);
         if (models.length > 0) {
@@ -415,6 +421,7 @@ function buildUsageReport(envDir, read) {
     const dailyCost = config.alerts.dailyCost ?? 0;
     return {
         days,
+        storage: usageStore?.mode,
         alert: {
             dailyTokens: threshold,
             dailyCost,
@@ -483,7 +490,7 @@ async function handleSettingsApiRequest(
         }
         sendJson(res, 200, {
             ok: true,
-            data: buildUsageReport(context.envDir, context.read)
+            data: buildUsageReport(context.envDir, context.read, context.usageStore)
         });
         return;
     }
@@ -515,7 +522,7 @@ async function handleSettingsApiRequest(
             );
             return;
         }
-        const report = buildUsageReport(context.envDir, context.read);
+        const report = buildUsageReport(context.envDir, context.read, context.usageStore);
         if (url.searchParams.get('format') === 'csv') {
             const body = usageExportCsv(report.days);
             res.writeHead(200, commonHeaders({
@@ -733,6 +740,9 @@ export async function runSettingsWeb({
     cleanupTimeoutMs = SESSION_TIMING.closeTimeoutMs + 100
 } = {}) {
     const token = createToken();
+    // 与代理运行时同一落盘层的用量存储（SQLite 优先，失败回退 JSON）：
+    // /api/usage 与 /api/usage/export 经此读取，并透出 storage 模式标注。
+    const usageStore = await createUsageStore();
     let expectedHost = null;
     let lifecycle;
     let server;
@@ -747,6 +757,7 @@ export async function runSettingsWeb({
         read: () => readConfig(envDir),
         write: (partial) => writeConfig(partial, envDir),
         envDir,
+        usageStore,
         onSession: (req, res) => lifecycle.onSession(req, res)
     });
     server = createServer(handler);
