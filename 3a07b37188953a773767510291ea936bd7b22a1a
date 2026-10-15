@@ -1,0 +1,37 @@
+src/settings.js
+  727a034631d893bc 26-29,55-56,114-141,185-186
+src/upstream.js
+  727a034631d893bc 29-31,34-45,48-50,54-57,60,62-68,71-79,81-95,98,104,107-108,110,122-123,125,127
+test/upstream-failover.test.mjs
+  727a034631d893bc 1-235
+README.md
+  727a034631d893bc 80-102
+README.en.md
+  727a034631d893bc 86-112
+test/settings.test.mjs
+  727a034631d893bc 15-16,78-79,414-415,426-427,438-439,450-451,508-593
+bin/claude-proxy.js
+  727a034631d893bc 96-99,105-110
+src/proxy.js
+  727a034631d893bc 153-154,156-177,192-202,267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "3a07b37188953a773767510291ea936bd7b22a1a",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 645,
+      "total_deletions": 88,
+      "accepted_lines": 590,
+      "overriden_lines": 0
+    }
+  }
+}
