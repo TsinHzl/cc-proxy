@@ -1,0 +1,31 @@
+src/pricing.js
+  727a034631d893bc 63-88
+test/pricing.test.mjs
+  727a034631d893bc 6,71-120
+bin/settings-web.js
+  727a034631d893bc 6,413-414,419-426
+src/settings.js
+  727a034631d893bc 22-26,58,97-101,103-111,201-205
+test/settings.test.mjs
+  727a034631d893bc 14-15,78-79,261,321,415-416,428-429,441-442,454-455,601-653
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "588165770d3fbaa34a6cdb7f3ebe7b1469e4ecf1",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 188,
+      "total_deletions": 20,
+      "accepted_lines": 184,
+      "overriden_lines": 0
+    }
+  }
+}
