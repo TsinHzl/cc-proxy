@@ -82,29 +82,77 @@ function readUsageFile(file) {
 }
 
 function normalizeDay(raw) {
-    const day = { ...EMPTY_USAGE };
+    const day = { ...EMPTY_USAGE, byModel: normalizeByModel(null) };
     if (!raw || typeof raw !== 'object') return day;
     day.requests = Number.isInteger(raw.requests) && raw.requests > 0 ? raw.requests : 0;
     for (const field of NUM_FIELDS) {
         day[field] = Number.isInteger(raw[field]) && raw[field] > 0 ? raw[field] : 0;
     }
+    // 按模型分组（新字段）：旧格式文件缺省回退 {}，兼容读取。
+    day.byModel = normalizeByModel(raw.byModel);
     return day;
+}
+
+// 单个模型条目与 EMPTY_USAGE 同形状；非法字段按 0 计。
+function normalizeModelEntry(raw) {
+    const entry = { ...EMPTY_USAGE };
+    if (!raw || typeof raw !== 'object') return entry;
+    entry.requests = Number.isInteger(raw.requests) && raw.requests > 0 ? raw.requests : 0;
+    for (const field of NUM_FIELDS) {
+        entry[field] = Number.isInteger(raw[field]) && raw[field] > 0 ? raw[field] : 0;
+    }
+    return entry;
+}
+
+// null 原型容器：模型名来自上游字符串，"__proto__"/"constructor" 等危险键
+// 必须落为自有属性而非原型操作，否则分组数据会静默丢失。
+function normalizeByModel(raw) {
+    const byModel = Object.create(null);
+    if (!raw || typeof raw !== 'object') return byModel;
+    for (const [model, entry] of Object.entries(raw)) {
+        if (typeof model !== 'string' || !model) continue;
+        byModel[model] = normalizeModelEntry(entry);
+    }
+    return byModel;
+}
+
+// 读取近 days 天（含今天，按本地日界倒推）的归一化统计数组，
+// 供设置页看板 API 使用。天数非法返回空数组；损坏/缺失日回退空统计。
+export function readRecentDays(file, days, now = () => new Date()) {
+    if (!Number.isInteger(days) || days < 1) return [];
+    const all = readUsageFile(file);
+    const base = now();
+    const out = [];
+    for (let i = 0; i < days; i++) {
+        const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() - i);
+        const key = dayKey(d);
+        out.push({ date: key, ...normalizeDay(all[key]) });
+    }
+    return out;
 }
 
 export function createUsageTracker({ usageFile = defaultUsagePath(), now = () => new Date() } = {}) {
     let dirty = false;
 
-    const record = (usage) => {
+    const record = (usage, model) => {
         if (!usage) return;
         const key = dayKey(now());
         const all = readUsageFile(usageFile);
         const day = normalizeDay(all[key]);
         day.requests += 1;
+        // model 缺失/非字符串归 unknown，保证分组键恒为合法字符串。
+        const modelKey = typeof model === 'string' && model ? model : 'unknown';
+        const entry = day.byModel[modelKey] ?? { ...EMPTY_USAGE };
         // 逐字段整数校验：非法值按 0 计，避免 NaN 污染导致落盘 null 抹掉历史累计。
         for (const field of NUM_FIELDS) {
             const v = usage[field];
-            if (Number.isInteger(v) && v > 0) day[field] += v;
+            if (Number.isInteger(v) && v > 0) {
+                day[field] += v;
+                entry[field] += v;
+            }
         }
+        entry.requests += 1;
+        day.byModel[modelKey] = entry;
         all[key] = day;
         try {
             fs.mkdirSync(path.dirname(usageFile), { recursive: true });

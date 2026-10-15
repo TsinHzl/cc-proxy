@@ -17,7 +17,13 @@ export const DEFAULT_CONFIG = Object.freeze({
     effortOverride: { enabled: true, level: 'high' },
     // 系统提示词覆写：开启且 prompt 非空时统一将 CC 请求体的 system 字段
     // 替换为配置文本。默认关闭；prompt 为空时覆写按 no-op 处理。
-    systemPromptOverride: { enabled: false, prompt: '' }
+    systemPromptOverride: { enabled: false, prompt: '' },
+    // 用量告警阈值：当日 tokens 超过 dailyTokens 时 CLI 启动提示 + 设置页红点。
+    // 0 表示未配置（不告警）。
+    alerts: { dailyTokens: 0 },
+    // 模型定价覆盖（每百万 token 美元）：models.<model>.pricing =
+    // { input, output, cacheRead, cacheCreation }，未收录模型不显示费用。
+    models: {}
 });
 
 const MIN_LINES = 1;
@@ -41,7 +47,9 @@ function normalizeConfig(raw) {
         forwardSuggestionMode: DEFAULT_CONFIG.forwardSuggestionMode,
         thinkingAsText: DEFAULT_CONFIG.thinkingAsText,
         effortOverride: { ...DEFAULT_CONFIG.effortOverride },
-        systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride }
+        systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride },
+        alerts: { ...DEFAULT_CONFIG.alerts },
+        models: {}
     };
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return config;
     const tw = raw.thinkingWindow;
@@ -69,6 +77,35 @@ function normalizeConfig(raw) {
     }
     if (typeof raw.thinkingAsText === 'boolean') {
         config.thinkingAsText = raw.thinkingAsText;
+    }
+    const alerts = raw.alerts;
+    if (alerts && typeof alerts === 'object' && !Array.isArray(alerts)) {
+        // 非负整数才接受（0 = 未配置告警；tokens 计数本身为整数，小数视为非法），
+        // 并加上界 1e12 防御异常超大值导致展示溢出。
+        if (Number.isSafeInteger(alerts.dailyTokens) && alerts.dailyTokens >= 0
+            && alerts.dailyTokens <= 1e12) {
+            config.alerts.dailyTokens = alerts.dailyTokens;
+        }
+    }
+    const models = raw.models;
+    if (models && typeof models === 'object' && !Array.isArray(models)) {
+        // null 原型容器：模型名来自用户配置字符串，防 "__proto__" 等危险键。
+        const pricingByModel = Object.create(null);
+        for (const [model, entry] of Object.entries(models)) {
+            if (typeof model !== 'string' || !model) continue;
+            const pricing = entry?.pricing ?? entry;
+            if (!pricing || typeof pricing !== 'object' || Array.isArray(pricing)) continue;
+            const clean = {};
+            for (const key of ['input', 'output', 'cacheRead', 'cacheCreation']) {
+                const v = pricing[key];
+                if (typeof v === 'number' && Number.isFinite(v) && v >= 0) clean[key] = v;
+            }
+            // 至少一项合法定价才收录该模型条目。
+            if (Object.keys(clean).length > 0) pricingByModel[model] = clean;
+        }
+        if (Object.keys(pricingByModel).length > 0) {
+            config.models = pricingByModel;
+        }
     }
     return config;
 }
@@ -105,7 +142,15 @@ export function writeConfig(partial, envDir) {
         thinkingAsText:
             typeof partial?.thinkingAsText === 'boolean'
                 ? partial.thinkingAsText
-                : current.thinkingAsText
+                : current.thinkingAsText,
+        alerts:
+            partial?.alerts && typeof partial.alerts === 'object' && !Array.isArray(partial.alerts)
+                ? { ...current.alerts, ...partial.alerts }
+                : current.alerts,
+        models:
+            partial?.models && typeof partial.models === 'object' && !Array.isArray(partial.models)
+                ? { ...current.models, ...partial.models }
+                : current.models
     });
     fs.mkdirSync(dir, { recursive: true });
     let mode = 0o600;

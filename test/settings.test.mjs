@@ -10,7 +10,9 @@ const EXPECTED_DEFAULT_CONFIG = {
     forwardSuggestionMode: false,
     thinkingAsText: true,
     effortOverride: { enabled: true, level: 'high' },
-    systemPromptOverride: { enabled: false, prompt: '' }
+    systemPromptOverride: { enabled: false, prompt: '' },
+    alerts: { dailyTokens: 0 },
+    models: {}
 };
 
 function tmpDir(t) {
@@ -70,7 +72,9 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         forwardSuggestionMode: true,
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'high' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {}
     });
 });
 
@@ -239,6 +243,91 @@ test('writeConfig: systemPromptOverride write keeps other top-level settings', (
     assert.deepEqual(out.systemPromptOverride, { enabled: false, prompt: 'x' });
 });
 
+// ---------- alerts / models.pricing ----------
+
+test('readConfig: invalid alerts.dailyTokens falls back to 0', (t) => {
+    const dir = tmpDir(t);
+    for (const dailyTokens of [null, '100', -1, 3.5, Infinity, NaN, []]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyTokens } }));
+        assert.equal(readConfig(dir).alerts.dailyTokens, 0, `dailyTokens=${JSON.stringify(dailyTokens)}`);
+    }
+    // alerts 整体非对象回退默认。
+    for (const alerts of [null, 'x', 7, [1]]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts }));
+        assert.deepEqual(readConfig(dir).alerts, { dailyTokens: 0 });
+    }
+});
+
+test('readConfig: valid alerts.dailyTokens persists (boundary 0)', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyTokens: 0 } }));
+    assert.equal(readConfig(dir).alerts.dailyTokens, 0);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyTokens: 500000 } }));
+    assert.equal(readConfig(dir).alerts.dailyTokens, 500000);
+});
+
+test('readConfig: models.pricing keeps only valid numeric fields, drops entries without any', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        models: {
+            'claude-sonnet-5': { pricing: { input: 3, output: 15, cacheRead: 0.3, cacheCreation: 3.75, junk: 'x' } },
+            'bad-entry': { pricing: { input: 'free', output: -1 } },   // 无合法字段 → 剔除
+            'no-pricing': {},                                          // 缺 pricing → 剔除
+            'pricing-array': { pricing: [1, 2] }                       // pricing 为数组 → 剔除
+        }
+    }));
+    const models = readConfig(dir).models;
+    assert.deepEqual(models['claude-sonnet-5'], { input: 3, output: 15, cacheRead: 0.3, cacheCreation: 3.75 });
+    assert.equal(Object.keys(models).length, 1);
+});
+
+test('readConfig: invalid models container falls back to empty object', (t) => {
+    const dir = tmpDir(t);
+    for (const models of [null, 'x', 7, ['claude']]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ models }));
+        assert.deepEqual(readConfig(dir).models, {});
+    }
+});
+
+test('readConfig: flat models pricing format (entry itself) is accepted', (t) => {
+    const dir = tmpDir(t);
+    // 平铺格式：条目本身就是定价对象（无 pricing 包装层）。
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"models":{"m1":{"input":1}}}');
+    // null 原型容器：deepEqual 对原型敏感，逐键断言内容。
+    const models = readConfig(dir).models;
+    assert.deepEqual({ ...models }, { m1: { input: 1 } });
+});
+
+test('readConfig: dangerous model keys (__proto__/constructor) persist as own properties', (t) => {
+    const dir = tmpDir(t);
+    // 手写原始 JSON：JS 字面量 __proto__: 会设置原型而非自有键，JSON.stringify 后消失。
+    fs.writeFileSync(path.join(dir, 'config.json'),
+        '{"models":{"__proto__":{"pricing":{"input":1}},"constructor":{"pricing":{"output":2}}}}');
+    const models = readConfig(dir).models;
+    // null 原型容器下危险键为自有属性：可读回，不污染原型。
+    assert.deepEqual(models['__proto__'], { input: 1 });
+    assert.deepEqual(models['constructor'], { output: 2 });
+});
+
+test('writeConfig: alerts and models merge without losing sibling settings', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ alerts: { dailyTokens: 1000 }, models: { 'm1': { pricing: { input: 1 } } } }, dir);
+    // 二次写其他字段时 alerts / models 不被静默丢弃。
+    const out = writeConfig({ thinkingAsText: false }, dir);
+    assert.deepEqual(out.alerts, { dailyTokens: 1000 });
+    assert.deepEqual(out.models['m1'], { input: 1 });
+    assert.equal(out.thinkingAsText, false);
+});
+
+test('writeConfig: alerts partial merge keeps dailyTokens, models partial merge keeps other models', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ models: { 'm1': { pricing: { input: 1 } }, 'm2': { pricing: { output: 2 } } } }, dir);
+    const out = writeConfig({ models: { 'm3': { pricing: { cacheRead: 0.5 } } } }, dir);
+    assert.deepEqual(out.models['m1'], { input: 1 });
+    assert.deepEqual(out.models['m2'], { output: 2 });
+    assert.deepEqual(out.models['m3'], { cacheRead: 0.5 });
+});
+
 // ---------- 写入与合并 ----------
 
 test('writeConfig: creates dir and file, merged result returned', (t) => {
@@ -318,7 +407,9 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: true,
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {}
     });
 
     out = writeConfig({ forwardSuggestionMode: false }, dir);
@@ -327,7 +418,9 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: false,
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {}
     });
 
     out = writeConfig({ thinkingAsText: true }, dir);
@@ -336,7 +429,9 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: false,
         thinkingAsText: true,
         effortOverride: { enabled: false, level: 'low' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {}
     });
 
     out = writeConfig({ effortOverride: { enabled: true, level: 'medium' } }, dir);
@@ -345,7 +440,9 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: false,
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'medium' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {}
     });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), out);
 });

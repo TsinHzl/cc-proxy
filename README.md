@@ -61,7 +61,7 @@ cc-proxy -p "解释这段代码"    # 非交互模式同样可用
 1. 在 127.0.0.1 起一个本地透明代理（随机可用端口）
 2. 注入 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` 后 spawn `claude`（全部参数/stdio 透传）
 3. claude 退出后代理随之退出（退出码透传），并在 stderr 打印本次会话用量总结
-   （请求数 / 输入 / 输出 / 缓存读写 tokens，需 `CC_PROXY_LOG=1` 查看）
+   （请求数 / 输入 / 输出 / 缓存读写 tokens / 缓存命中率，需 `CC_PROXY_LOG=1` 查看）
 
 ### 指定上游
 
@@ -145,12 +145,37 @@ Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建
     "inputTokens": 123456,
     "outputTokens": 5678,
     "cacheReadTokens": 89012,
-    "cacheCreationTokens": 1234
+    "cacheCreationTokens": 1234,
+    "byModel": {
+      "claude-sonnet-5": { "requests": 40, "inputTokens": 120000, "outputTokens": 5400, "cacheReadTokens": 88000, "cacheCreationTokens": 1200 }
+    }
   }
 }
 ```
 
 文件缺失或损坏时自动回退空统计，落盘失败不阻塞代理流量。`claude` 退出时会把本次会话的当日累计总结打印到 stderr（需 `CC_PROXY_LOG=1`）。
+
+### 用量看板与告警
+
+```bash
+cc-proxy --setting
+```
+
+设置页展示近 7 天用量看板：每日柱状图、按模型分组统计、缓存命中率与估算费用（`GET /api/usage`）。数据来自 `usage.json` 的 `byModel` 按模型分组累计（模型缺失时归入 `unknown`）。
+
+- **缓存命中率**：`cacheRead / (cacheRead + cacheCreation + input)`，无请求时分母为 0，显示为 `n/a`。
+- **费用估算**：内置 claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5 默认价表（USD / 每百万 token），日期后缀变体（如 `claude-sonnet-5-2026xxxx`）按最长前缀匹配命中；未收录模型不显示费用。
+- **价表覆盖**：在 `~/.cc-proxy/config.json` 中配置 `models.<model>.pricing = { input, output, cacheRead, cacheCreation }` 即可覆盖内置价表（支持前缀键），精确键优先于前缀匹配。
+- **当日用量告警**：配置 `alerts.dailyTokens`（正整数）后，当日 tokens（输入 + 输出 + 缓存读写）超过阈值时，CLI 启动横幅前打印一条 WARNING，设置页看板出现红点；未配置（0）时零提示。
+
+```json
+{
+  "alerts": { "dailyTokens": 5000000 },
+  "models": {
+    "my-model-v2": { "pricing": { "input": 2, "output": 10, "cacheRead": 0.2, "cacheCreation": 2.5 } }
+  }
+}
+```
 
 ### Debug 请求日志
 
@@ -183,6 +208,7 @@ npm test        # node:test 单元 + 端到端测试
 | `src/upstream.js` | 上游地址解析与请求转发 |
 | `src/settings.js` | 配置读写（`~/.cc-proxy/config.json`），缺失/损坏回退默认值 |
 | `src/suggestion-mode.js` | 建议请求识别与空响应构建（流式/非流式） |
-| `src/usage.js` | 用量提取与按天持久化（`~/.cc-proxy/usage.json`） |
+| `src/usage.js` | 用量提取与按天持久化（`~/.cc-proxy/usage.json`），含 byModel 按模型分组 |
+| `src/pricing.js` | 模型定价与费用估算（内置价表 + config 覆盖 + 前缀匹配）、缓存命中率 |
 | `src/debug-log.js` | 请求级 debug 日志（`CC_PROXY_DEBUG=1`） |
 | `test/*.test.mjs` | 单元与端到端测试（node:test） |

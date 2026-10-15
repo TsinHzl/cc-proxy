@@ -61,6 +61,15 @@ function writeEvent(res, data) {
     });
 }
 
+// 流式路径：从 collected 的 message_start 事件取 model（usage 按模型分组用）。
+function extractModelFromResponseEvents(events) {
+    for (const event of events) {
+        const model = event?.type === 'message_start' ? event.message?.model : null;
+        if (typeof model === 'string' && model) return model;
+    }
+    return null;
+}
+
 // Non-streaming JSON responses: convert thinking content blocks to rendered
 // dim-blockquote text blocks (signatures stripped), CC UA only.
 function transformNonStreamingResponse(body, thinkingAsText) {
@@ -68,11 +77,12 @@ function transformNonStreamingResponse(body, thinkingAsText) {
     try {
         parsed = JSON.parse(body.toString('utf8'));
     } catch {
-        return { body, usage: null };
+        return { body, usage: null, model: null };
     }
-    if (!thinkingAsText) return { body, usage: extractUsage(parsed?.usage) };
+    const model = typeof parsed?.model === 'string' && parsed.model ? parsed.model : null;
+    if (!thinkingAsText) return { body, usage: extractUsage(parsed?.usage), model };
     if (parsed?.type !== 'message' || !Array.isArray(parsed.content)) {
-        return { body, usage: extractUsage(parsed?.usage) };
+        return { body, usage: extractUsage(parsed?.usage), model };
     }
 
     let changed = false;
@@ -84,9 +94,9 @@ function transformNonStreamingResponse(body, thinkingAsText) {
     });
     // 无 thinking 块时保留原始字节（避免多余重序列化改变转义/空白）；
     // usage 提取只需 parse，不需要重写 body。
-    if (!changed) return { body, usage: extractUsage(parsed.usage) };
+    if (!changed) return { body, usage: extractUsage(parsed.usage), model };
     parsed.content = content;
-    return { body: Buffer.from(JSON.stringify(parsed), 'utf8'), usage: extractUsage(parsed.usage) };
+    return { body: Buffer.from(JSON.stringify(parsed), 'utf8'), usage: extractUsage(parsed.usage), model };
 }
 
 // Bridges upstream SSE bytes into a parsed-event async iterator with
@@ -245,7 +255,7 @@ export function createProxyServer({
                     upstreamRes.on('data', (c) => bodyChunks.push(c));
                     upstreamRes.on('error', () => { if (!res.headersSent) res.end(); });
                     upstreamRes.on('end', () => {
-                        const { body: out, usage: respUsage } = transformNonStreamingResponse(
+                        const { body: out, usage: respUsage, model: parsedModel } = transformNonStreamingResponse(
                             Buffer.concat(bodyChunks),
                             thinkingAsText
                         );
@@ -256,7 +266,7 @@ export function createProxyServer({
                         headers['content-length'] = Buffer.byteLength(out);
                         res.writeHead(upstreamRes.statusCode, headers);
                         res.end(out);
-                        if (usage) usage.record(respUsage);
+                        if (usage) usage.record(respUsage, parsedModel);
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     });
                     return;
@@ -284,7 +294,12 @@ export function createProxyServer({
                             await writeEvent(res, event);
                         }
                         res.end();
-                        if (usage) usage.record(extractUsageFromResponseEvents(collected));
+                        if (usage) {
+                            usage.record(
+                                extractUsageFromResponseEvents(collected),
+                                extractModelFromResponseEvents(collected)
+                            );
+                        }
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     } catch (err) {
                         logger.error('[cc-proxy] stream transform failed:', err.message);

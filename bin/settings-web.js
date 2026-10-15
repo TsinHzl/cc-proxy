@@ -2,6 +2,8 @@ import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readConfig, writeConfig } from '../src/settings.js';
+import { defaultUsagePath, readRecentDays } from '../src/usage.js';
+import { estimateCost, cacheHitRate } from '../src/pricing.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import {
     SESSION_TIMING,
@@ -374,6 +376,49 @@ async function handleSettingsPatch(context, req, res, host) {
     }
 }
 
+// GET /api/usage：近 7 天用量看板数据（token/请求数/按模型分组/命中率/费用/告警）。
+// 费用为保守估算：任一模型定价缺失即整日费用置 null（未知价模型费用不可信，
+// 部分求和会低估），全部模型可定价才给出总和；当日无任何模型时 cost 为 null。
+// 注：用量数据固定读全局 ~/.cc-proxy/usage.json（不做 envDir 覆盖），
+// 与 config 的 envDir 语义独立 —— 用量始终全局累计。
+function buildUsageReport(envDir, read) {
+    const config = read();
+    const days = readRecentDays(defaultUsagePath(), 7).map((day) => {
+        let cost = null;
+        const models = Object.keys(day.byModel);
+        if (models.length > 0) {
+            cost = 0;
+            for (const model of models) {
+                const c = estimateCost(day.byModel[model], model, envDir);
+                if (c === null) cost = null;
+                else if (cost !== null) cost += c;
+            }
+        }
+        return {
+            date: day.date,
+            requests: day.requests,
+            inputTokens: day.inputTokens,
+            outputTokens: day.outputTokens,
+            cacheReadTokens: day.cacheReadTokens,
+            cacheCreationTokens: day.cacheCreationTokens,
+            totalTokens: day.inputTokens + day.outputTokens
+                + day.cacheReadTokens + day.cacheCreationTokens,
+            hitRate: cacheHitRate(day),
+            cost,
+            byModel: day.byModel
+        };
+    });
+    const threshold = config.alerts.dailyTokens;
+    const today = days[0];
+    return {
+        days,
+        alert: {
+            dailyTokens: threshold,
+            exceeded: threshold > 0 && today.totalTokens > threshold
+        }
+    };
+}
+
 async function handleSettingsApiRequest(
     context,
     req,
@@ -397,6 +442,22 @@ async function handleSettingsApiRequest(
         sendJson(res, 200, {
             ok: true,
             data: { prompt: captured?.readCaptured() ?? null }
+        });
+        return;
+    }
+    if (url.pathname === '/api/usage') {
+        if (req.method !== 'GET') {
+            sendJson(
+                res,
+                405,
+                { ok: false, error: '请求方法不支持' },
+                { allow: 'GET' }
+            );
+            return;
+        }
+        sendJson(res, 200, {
+            ok: true,
+            data: buildUsageReport(context.envDir, context.read)
         });
         return;
     }
@@ -609,6 +670,7 @@ export async function runSettingsWeb({
         expectedHost: () => expectedHost,
         read: () => readConfig(envDir),
         write: (partial) => writeConfig(partial, envDir),
+        envDir,
         onSession: (req, res) => lifecycle.onSession(req, res)
     });
     server = createServer(handler);
