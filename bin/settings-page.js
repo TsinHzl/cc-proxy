@@ -22,7 +22,7 @@ body {
     color: var(--text);
     font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-main { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 18px 0; }
+main { width: calc(100% - 72px); margin: 0 auto; padding: 18px 0; }
 header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
 h1 { margin: 0; font-size: 17px; font-weight: 650; }
 header p, .description { color: var(--muted); }
@@ -95,7 +95,7 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-tab { padding: 3px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
 .usage-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 @media (max-width: 640px) {
-    main { width: min(100% - 24px, 1120px); padding: 12px 0; }
+    main { width: calc(100% - 24px); padding: 12px 0; }
     header { display: block; }
     header p { margin-top: 4px; }
     .setting { min-height: 52px; padding: 8px 14px; gap: 16px; }
@@ -157,7 +157,6 @@ const PAGE_BODY = `
             </div>
             <div class="controls">
                 <select id="systemPromptTemplate" aria-label="系统提示词角色" disabled>
-                    <option value="">选择角色…</option>
                     <option value="__CC_OFFICIAL__">CC官方</option>
                 </select>
                 <label class="switch" for="systemPromptOverrideEnabled">
@@ -561,7 +560,8 @@ const PAGE_SCRIPT = `
         templateSelect.appendChild(option);
     }
     // 下拉选中项始终反映输入框当前内容：内容与某条模板一致时显示该模板名，
-    // 否则（手动修改、预填捕获提示词、空）回落占位项。value 存模板全文便于比对。
+    // 否则（手动修改、预填捕获提示词、空）默认回落 CC官方项。
+    // value 存模板全文便于比对；__CC_OFFICIAL__ 为哨兵值，不与模板全文冲突。
     function syncTemplateSelect() {
         const current = document.getElementById('systemPromptOverridePrompt').value;
         let matched = '';
@@ -571,7 +571,7 @@ const PAGE_SCRIPT = `
                 break;
             }
         }
-        templateSelect.value = matched;
+        templateSelect.value = matched || '__CC_OFFICIAL__';
     }
     templateSelect.addEventListener('change', (event) => {
         const select = event.currentTarget;
