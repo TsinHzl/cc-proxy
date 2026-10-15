@@ -7,7 +7,7 @@
 ### F1 用量导出与分级告警
 - [x] T1 新增 `GET /api/usage/export?format=csv|json`（30 天聚合，CSV 含 date/requests/各 token 字段/费用；JSON 复用 buildUsageReport；未知 format 返回 400）——验证：node:test 覆盖两种 format 的响应头、内容与 400 分支
 - [x] T2 告警分级：config.json 支持 `usageAlert.warnThreshold`(默认0.8)/`limitThreshold`(默认1.0)；比值基准 = max(今日 tokens/alerts.dailyTokens, 今日估算费用/alerts.dailyCost)，仅计已配置项，均未配置 level=none；告警计算返回 `{level:'none'|'warn'|'limit', ratio}`，/api/usage 的 alert 字段升级（保留 exceeded=level==='limit' 兼容）——验证：阈值边界测试（79%/80%/99%/100%）+ 无预算配置 + 非法阈值回退
-- [ ] T3 设置页看板接入两级告警展示（黄色预警条 + 红色超限，含 ratio）与导出按钮（下载 CSV/JSON）；渲染函数遵守文件 ≤800 行约束——验证：设置页测试断言新节点与文本
+- [x] T3 设置页看板接入两级告警展示（黄色预警条 + 红色超限，含 ratio）与导出按钮（下载 CSV/JSON）；渲染函数遵守文件 ≤800 行约束——验证：设置页测试断言新节点与文本
 
 ### F2 上游健康面板（被动统计）
 - [ ] T4 新增 `src/upstream-health.js`：记录各上游请求成功/失败、TTFT（样本限最近 500/上游）、次数，提供 `getHealthSnapshot()`（含 p50/p95）；快照防抖落盘到 `~/.cc-proxy/runtime/upstream-health.json`（tmp+rename 原子替换，500ms 合并写，进程退出 flush）；proxy.js 故障转移处埋点记录切换事件（时间+原因，环形 20 条）——验证：单元测试覆盖记录、百分位、切换事件与落盘/损坏文件回退
