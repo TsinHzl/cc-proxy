@@ -10,6 +10,8 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
 import { createUsageTracker } from '../src/usage.js';
+import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
+import { cacheHitRate } from '../src/pricing.js';
 import { readConfig } from '../src/settings.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import { logger } from '../src/logger.js';
@@ -51,7 +53,10 @@ export function main({
     runSettings = runSettingsWeb,
     readSettings = readConfig,
     createProxy = createProxyServer,
-    spawnProcess = spawn
+    spawnProcess = spawn,
+    createTracker = createUsageTracker,
+    createLatency = createLatencyTracker,
+    warn = (msg) => logger.warn(msg)
 } = {}) {
     // --version/-v: print version and exit, no proxy/claude started.
     if (argv.includes('--version') || argv.includes('-v')) {
@@ -67,23 +72,46 @@ export function main({
 
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
-    const usageTracker = createUsageTracker();
-    const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = readSettings();
+    const usageTracker = createTracker();
+    const latencyTracker = createLatency();
+    const settings = readSettings();
+    const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = settings;
+    // 当日用量告警：仅当 config 配置了 alerts.dailyTokens（> 0）且当日累计
+    // tokens 已超阈值时，在启动横幅前追加一条警告；未配置/未超限零输出。
+    const threshold = settings?.alerts?.dailyTokens ?? 0;
+    if (threshold > 0) {
+        const all = usageTracker.summary();
+        const todayTokens = all.inputTokens + all.outputTokens
+            + all.cacheReadTokens + all.cacheCreationTokens;
+        if (todayTokens > threshold) {
+            warn(`[claude-proxy] WARNING: today's usage (${todayTokens} tokens) exceeds alerts.dailyTokens (${threshold})`);
+        }
+    }
     const server = createProxy({
         baseUrlEnv: originalBase,
         usageTracker,
+        latencyTracker,
         forwardSuggestionMode,
         thinkingAsText,
         effortOverride,
         systemPromptOverride,
         systemPromptCapture: createSystemPromptCapture({
             file: capturedSystemPromptPath()
-        })
+        }),
+        // 备用上游启动时读取一次并固定（不热加载）；mock 的 settings 可能
+        // 缺少该键，兜底为空数组。
+        failoverUpstreams: settings.upstreams || []
     });
 
     server.listen(0, '127.0.0.1', () => {
         const { port } = server.address();
         logger.warn(`[claude-proxy] listening on http://127.0.0.1:${port} (upstream: ${originalBase || 'https://api.anthropic.com'})`);
+        // 配置了备用上游时追加 failover 列表行（默认静默，CC_PROXY_LOG=1 可见）。
+        const failovers = (Array.isArray(settings.upstreams) ? settings.upstreams : [])
+            .filter((u) => u && typeof u === 'object' && u.baseUrl);
+        if (failovers.length) {
+            warn(`[claude-proxy] failover upstreams: ${failovers.map((u) => u.name).join(', ')}`);
+        }
 
         const child = spawnProcess(CLAUDE_BIN, argv.slice(2), {
             stdio: 'inherit',
@@ -94,10 +122,17 @@ export function main({
         // down when the child exits. Before exiting, print a per-session
         // usage summary to stderr (via the silent-by-default logger).
         child.on('exit', (code, signal) => {
-            const s = usageTracker.summary();
-            logger.warn(
-                `[claude-proxy] usage ${s.day}: ${s.requests} reqs, in ${s.inputTokens}, out ${s.outputTokens}, cache-read ${s.cacheReadTokens}, cache-create ${s.cacheCreationTokens}`
-            );
+            if (logger.enabled) {
+                const s = usageTracker.summary();
+                const hitRate = cacheHitRate(s);
+                const hitRateText = hitRate === null ? 'n/a' : `${(hitRate * 100).toFixed(1)}%`;
+                warn(
+                    `[claude-proxy] usage ${s.day}: ${s.requests} reqs, in ${s.inputTokens}, out ${s.outputTokens}, cache-read ${s.cacheReadTokens}, cache-create ${s.cacheCreationTokens}, cache-hit ${hitRateText}`
+                );
+                // 延迟汇总行：无样本（无请求或全部被拦截）时 null，不输出。
+                const latencyLine = formatLatencySummary(latencyTracker.summary());
+                if (latencyLine) warn(`[claude-proxy] ${latencyLine}`);
+            }
             server.close();
             if (signal) process.kill(process.pid, signal);
             process.exit(code ?? 0);

@@ -40,7 +40,7 @@ function localDayKey(date = new Date()) {
 test('proxy records usage from SSE stream into usage.json', async () => {
     const usageFile = tmpFile('usage.json');
     const upstream = await startMockUpstream([
-        { type: 'message_start', message: { usage: { input_tokens: 100, output_tokens: 1 } } },
+        { type: 'message_start', message: { model: 'claude-sonnet-5', usage: { input_tokens: 100, output_tokens: 1 } } },
         { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } },
         { type: 'message_delta', usage: { output_tokens: 42 } }
     ]);
@@ -65,6 +65,16 @@ test('proxy records usage from SSE stream into usage.json', async () => {
             outputTokens: 42,
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
+            // byModel 为 null 原型容器（防 __proto__ 键污染），deepEqual 断言其内容。
+            byModel: Object.assign(Object.create(null), {
+                'claude-sonnet-5': {
+                    requests: 1,
+                    inputTokens: 100,
+                    outputTokens: 42,
+                    cacheReadTokens: 0,
+                    cacheCreationTokens: 0
+                }
+            }),
             persisted: true
         });
     } finally {
@@ -76,7 +86,7 @@ test('proxy records usage from SSE stream into usage.json', async () => {
 test('proxy records usage from non-streaming message JSON', async () => {
     const usageFile = tmpFile('usage.json');
     const upstream = await startMockUpstream(
-        { type: 'message', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 7, output_tokens: 3 } },
+        { type: 'message', model: 'claude-opus-5', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 7, output_tokens: 3 } },
         { json: true }
     );
     const tracker = createUsageTracker({ usageFile });
@@ -97,6 +107,7 @@ test('proxy records usage from non-streaming message JSON', async () => {
         assert.equal(s.requests, 1);
         assert.equal(s.inputTokens, 7);
         assert.equal(s.outputTokens, 3);
+        assert.equal(s.byModel['claude-opus-5'].requests, 1);
     } finally {
         proxy.close();
         upstream.close();

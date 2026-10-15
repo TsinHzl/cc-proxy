@@ -2,9 +2,8 @@
 // with claude (stdio: 'inherit'), and any bytes we print land inside Claude
 // Code's Ink renderer — visibly corrupting the input box. Set CC_PROXY_LOG=1
 // to restore stderr output when debugging the proxy itself.
-const enabled = process.env.CC_PROXY_LOG === '1';
-
 export const logger = {
-    warn: (...args) => { if (enabled) console.warn(...args); },
-    error: (...args) => { if (enabled) console.error(...args); }
+    get enabled() { return process.env.CC_PROXY_LOG === '1'; },
+    warn(...args) { if (this.enabled) console.warn(...args); },
+    error(...args) { if (this.enabled) console.error(...args); }
 };

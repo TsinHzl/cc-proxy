@@ -79,6 +79,18 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .prompt-block { display: block; padding: 10px 16px 14px; }
 .status { min-height: 20px; margin: 8px 4px 0; color: var(--muted); }
 .status.error { color: var(--error); }
+.usage-card { margin-bottom: 12px; }
+.usage-bars { display: flex; align-items: flex-end; gap: 8px; height: 120px; padding: 8px 4px 0; }
+.usage-bar { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.usage-bar-fill { width: 100%; max-width: 48px; min-height: 2px; border-radius: 3px 3px 0 0; background: var(--accent); }
+.usage-bar-fill.alert { background: var(--error); }
+.usage-bar-label { font-size: 9px; color: var(--muted); white-space: nowrap; }
+.usage-summary { margin: 8px 4px 0; font-size: 12px; color: var(--muted); }
+.usage-summary .alert-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; background: var(--error); }
+.usage-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
+.usage-table th, .usage-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.usage-table th { color: var(--muted); font-weight: normal; }
+.usage-empty { margin: 8px 4px 0; color: var(--muted); font-size: 12px; }
 @media (max-width: 640px) {
     main { width: min(100% - 24px, 1120px); padding: 12px 0; }
     header { display: block; }
@@ -143,6 +155,7 @@ const PAGE_BODY = `
             <div class="controls">
                 <select id="systemPromptTemplate" aria-label="系统提示词角色" disabled>
                     <option value="">选择角色…</option>
+                    <option value="__CC_OFFICIAL__">CC官方</option>
                 </select>
                 <label class="switch" for="systemPromptOverrideEnabled">
                     <input id="systemPromptOverrideEnabled" type="checkbox" disabled>
@@ -152,6 +165,12 @@ const PAGE_BODY = `
         </div>
         <div class="prompt-block">
             <textarea id="systemPromptOverridePrompt" aria-label="自定义系统提示词" disabled spellcheck="false"></textarea>
+        </div>
+    </section>
+    <p class="section-title">用量看板（近 7 天）</p>
+    <section class="card usage-card" aria-label="用量看板">
+        <div id="usageBoard" aria-live="polite">
+            <p id="usagePlaceholder" class="usage-empty">用量数据加载中…</p>
         </div>
     </section>
     <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -553,6 +572,22 @@ const PAGE_SCRIPT = `
     }
     templateSelect.addEventListener('change', (event) => {
         const select = event.currentTarget;
+        if (select.value === '__CC_OFFICIAL__') {
+            // 选中 CC官方：填入代理捕获的 CC 默认系统提示词（无捕获则清空），
+            // 随后由 blur 提交链路统一保存。走 prefilling 互斥并在回调内
+            // 快照比对，避免拉取期间覆盖用户已输入内容。
+            prefilling = true;
+            const before = document.getElementById('systemPromptOverridePrompt').value;
+            fetchCapturedPrompt().then((prompt) => {
+                const textarea = document.getElementById('systemPromptOverridePrompt');
+                if (textarea.value !== before) return;
+                textarea.value = prompt ?? '';
+                syncTemplateSelect();
+            }).finally(() => {
+                prefilling = false;
+            });
+            return;
+        }
         if (select.value) {
             document.getElementById('systemPromptOverridePrompt').value = select.value;
         }
@@ -591,8 +626,135 @@ const PAGE_SCRIPT = `
         return response.body;
     }
 
+    // 用量看板：bootstrap 取到 token 后并行拉取，失败静默降级，绝不阻断设置功能。
+    function formatTokens(value) {
+        if (!Number.isInteger(value) || value <= 0) return '0';
+        if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
+        if (value >= 1000) return (value / 1000).toFixed(1) + 'k';
+        return String(value);
+    }
+
+    function formatCost(cost) {
+        // 未配置/未收录模型时 cost 为 null：显示占位而非报错。
+        if (cost === null || cost === undefined) return '';
+        return '$' + cost.toFixed(2);
+    }
+
+    function formatHitRate(hitRate) {
+        if (hitRate === null || hitRate === undefined) return 'n/a';
+        return (hitRate * 100).toFixed(1) + '%';
+    }
+
+    function formatDayLabel(date) {
+        const parts = typeof date === 'string' ? date.split('-') : [];
+        return parts.length === 3 ? parts[1] + '-' + parts[2] : String(date ?? '');
+    }
+
+    function renderUsageBoard(data) {
+        const board = document.getElementById('usageBoard');
+        board.textContent = '';
+        const days = Array.isArray(data?.days) ? data.days : [];
+        if (days.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'usage-empty';
+            empty.textContent = '暂无用量数据';
+            board.appendChild(empty);
+            return;
+        }
+        const maxTokens = Math.max(...days.map((day) => day.totalTokens || 0), 0);
+        const exceeded = data?.alert?.exceeded === true;
+        const today = days[0];
+
+        // 柱状图：totalTokens 归一化高度，今日超阈值红色柱。
+        const bars = document.createElement('div');
+        bars.className = 'usage-bars';
+        for (const day of days) {
+            const col = document.createElement('div');
+            col.className = 'usage-bar';
+            const fill = document.createElement('div');
+            fill.className = 'usage-bar-fill' + (exceeded && day === today ? ' alert' : '');
+            const ratio = maxTokens > 0 ? (day.totalTokens || 0) / maxTokens : 0;
+            fill.style.height = Math.round(ratio * 100) + '%';
+            const label = document.createElement('span');
+            label.className = 'usage-bar-label';
+            label.textContent = formatDayLabel(day.date);
+            col.appendChild(fill);
+            col.appendChild(label);
+            bars.appendChild(col);
+        }
+        board.appendChild(bars);
+
+        // 今日汇总行：总量 / 命中率 / 费用（null 显示空）/ 超阈值红点。
+        const summary = document.createElement('p');
+        summary.className = 'usage-summary';
+        if (exceeded) {
+            const dot = document.createElement('span');
+            dot.className = 'alert-dot';
+            dot.setAttribute('aria-label', '今日用量已超阈值');
+            dot.textContent = ' ';
+            summary.appendChild(dot);
+            summary.appendChild(document.createTextNode('今日用量已超阈值 · '));
+        }
+        const todayCost = formatCost(today.cost);
+        summary.appendChild(document.createTextNode(
+            '今日 ' + formatTokens(today.totalTokens) + ' tokens · 命中率 '
+                + formatHitRate(today.hitRate)
+                + (todayCost ? ' · 费用 ' + todayCost : '')
+        ));
+        board.appendChild(summary);
+
+        // 按模型表：今日各模型用量；模型名经 textContent 渲染防注入。
+        const models = Object.keys(today.byModel || {});
+        if (models.length > 0) {
+            const table = document.createElement('table');
+            table.className = 'usage-table';
+            const head = document.createElement('tr');
+            for (const cell of ['模型', '请求', '输入', '输出', '缓存读', '缓存写']) {
+                const th = document.createElement('th');
+                th.textContent = cell;
+                head.appendChild(th);
+            }
+            table.appendChild(head);
+            for (const model of models) {
+                const entry = today.byModel[model] || {};
+                const row = document.createElement('tr');
+                for (const cell of [
+                    model,
+                    String(entry.requests ?? 0),
+                    formatTokens(entry.inputTokens ?? 0),
+                    formatTokens(entry.outputTokens ?? 0),
+                    formatTokens(entry.cacheReadTokens ?? 0),
+                    formatTokens(entry.cacheCreationTokens ?? 0)
+                ]) {
+                    const td = document.createElement('td');
+                    td.textContent = cell;
+                    row.appendChild(td);
+                }
+                table.appendChild(row);
+            }
+            board.appendChild(table);
+        }
+    }
+
+    async function loadUsageBoard() {
+        try {
+            const response = await fetch('/api/usage', { headers });
+            if (!response.ok) throw new Error('usage http ' + response.status);
+            const { data } = await response.json();
+            renderUsageBoard(data);
+        } catch {
+            const board = document.getElementById('usageBoard');
+            board.textContent = '';
+            const empty = document.createElement('p');
+            empty.className = 'usage-empty';
+            empty.textContent = '用量数据不可用';
+            board.appendChild(empty);
+        }
+    }
+
     async function initialize() {
         await bootstrap();
+        loadUsageBoard();
         const [, body] = await Promise.all([load(), openLease()]);
         leaseActive = true;
         setDisabled(false);

@@ -64,8 +64,8 @@ What the command does:
 1. Starts a local transparent proxy on 127.0.0.1 (random free port)
 2. Spawns `claude` with `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` injected (all args/stdio passed through)
 3. Shuts the proxy down when claude exits (exit code passed through) and prints a
-   per-session usage summary to stderr (requests / input / output / cache tokens;
-   requires `CC_PROXY_LOG=1`)
+   per-session usage summary to stderr (requests / input / output / cache tokens /
+   cache-hit rate; requires `CC_PROXY_LOG=1`)
 
 ### Choosing an upstream
 
@@ -82,6 +82,33 @@ ANTHROPIC_BASE_URL=https://gw.example.com/api cc-proxy
 
 > The variable is saved as the forwarding target first, then replaced with the local
 > address for claude, so your existing configuration is not lost.
+
+### Multi-upstream failover
+
+Configure an `upstreams` array in `~/.cc-proxy/config.json` to enable backup
+upstreams (read once and fixed at startup):
+
+```json
+{
+  "upstreams": [
+    { "name": "backup-a", "baseUrl": "https://gw-a.example.com/api", "headers": { "x-api-key": "sk-a" } },
+    { "name": "backup-b", "baseUrl": "https://gw-b.example.com" }
+  ]
+}
+```
+
+Requests are forwarded in order: primary upstream (`ANTHROPIC_BASE_URL`) → each
+entry of `upstreams`. The primary gets same-upstream retries on 502/503/529
+(1s/2s/4s); once exhausted — or immediately on 429/500, or after connection-level
+failures exhaust retries — it fails over to the next backup upstream, merging that
+entry's `headers` (e.g. its own API key). If all upstreams fail, the client
+receives the last error response. `name` defaults to the host; `baseUrl` path
+prefix handling matches the primary upstream.
+
+> Keys in `headers` are stored only in `~/.cc-proxy/config.json` (file mode 0600)
+> and never printed to logs. The startup banner and failover events are visible
+> with `CC_PROXY_LOG=1`, silent by default. Without `upstreams` configured,
+> behavior is identical to before.
 
 ### Rendering
 
@@ -153,7 +180,10 @@ totals to `~/.cc-proxy/usage.json`:
     "inputTokens": 123456,
     "outputTokens": 5678,
     "cacheReadTokens": 89012,
-    "cacheCreationTokens": 1234
+    "cacheCreationTokens": 1234,
+    "byModel": {
+      "claude-sonnet-5": { "requests": 40, "inputTokens": 120000, "outputTokens": 5400, "cacheReadTokens": 88000, "cacheCreationTokens": 1200 }
+    }
   }
 }
 ```
@@ -161,6 +191,41 @@ totals to `~/.cc-proxy/usage.json`:
 A missing or corrupted file falls back to empty stats; write failures never
 block proxy traffic. When `claude` exits, the day's totals are printed to
 stderr (requires `CC_PROXY_LOG=1`).
+
+### Usage dashboard and alerts
+
+```bash
+cc-proxy --setting
+```
+
+The settings page shows a 7-day usage dashboard (via `GET /api/usage`): daily
+bar chart, per-model breakdown, cache-hit rate, and estimated cost. Data comes
+from the per-model `byModel` totals in `usage.json` (requests without a model
+are grouped under `unknown`).
+
+- **Cache-hit rate**: `cacheRead / (cacheRead + cacheCreation + input)`; with
+  no requests the denominator is 0 and the value shows as `n/a`.
+- **Cost estimation**: built-in default pricing for claude-opus-5 /
+  claude-sonnet-5 / claude-haiku-4-5 (USD per million tokens); date-suffixed
+  variants (e.g. `claude-sonnet-5-2026xxxx`) match via longest-prefix. Models
+  without pricing show no cost.
+- **Pricing override**: set `models.<model>.pricing =
+  { input, output, cacheRead, cacheCreation }` in `~/.cc-proxy/config.json` to
+  override the built-in table (prefix keys supported; exact keys win over
+  prefixes).
+- **Daily usage alert**: with `alerts.dailyTokens` set (positive integer), when
+  the day's tokens (input + output + cache read/creation) exceed the threshold,
+  the CLI prints a WARNING before the startup banner and the dashboard shows a
+  red dot; when unset (0) nothing is emitted.
+
+```json
+{
+  "alerts": { "dailyTokens": 5000000 },
+  "models": {
+    "my-model-v2": { "pricing": { "input": 2, "output": 10, "cacheRead": 0.2, "cacheCreation": 2.5 } }
+  }
+}
+```
 
 ### Debug request log
 
@@ -194,6 +259,7 @@ npm test        # node:test unit + end-to-end tests (75 cases)
 | `src/upstream.js` | Upstream URL resolution and request forwarding |
 | `src/settings.js` | Config read/write (`~/.cc-proxy/config.json`), missing/corrupt falls back to defaults |
 | `src/suggestion-mode.js` | Suggestion request detection and empty-response building (streaming/non-streaming) |
-| `src/usage.js` | Usage extraction and daily persistence (`~/.cc-proxy/usage.json`) |
+| `src/usage.js` | Usage extraction and daily persistence (`~/.cc-proxy/usage.json`), with per-model `byModel` grouping |
+| `src/pricing.js` | Model pricing and cost estimation (built-in table + config override + prefix match), cache-hit rate |
 | `src/debug-log.js` | Per-request debug log (`CC_PROXY_DEBUG=1`) |
 | `test/*.test.mjs` | Unit and end-to-end tests (node:test) |

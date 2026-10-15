@@ -10,7 +10,10 @@ const EXPECTED_DEFAULT_CONFIG = {
     forwardSuggestionMode: false,
     thinkingAsText: true,
     effortOverride: { enabled: true, level: 'high' },
-    systemPromptOverride: { enabled: false, prompt: '' }
+    systemPromptOverride: { enabled: false, prompt: '' },
+    alerts: { dailyTokens: 0 },
+    models: {},
+    upstreams: []
 };
 
 function tmpDir(t) {
@@ -70,7 +73,10 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         forwardSuggestionMode: true,
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'high' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {},
+        upstreams: []
     });
 });
 
@@ -239,6 +245,91 @@ test('writeConfig: systemPromptOverride write keeps other top-level settings', (
     assert.deepEqual(out.systemPromptOverride, { enabled: false, prompt: 'x' });
 });
 
+// ---------- alerts / models.pricing ----------
+
+test('readConfig: invalid alerts.dailyTokens falls back to 0', (t) => {
+    const dir = tmpDir(t);
+    for (const dailyTokens of [null, '100', -1, 3.5, Infinity, NaN, []]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyTokens } }));
+        assert.equal(readConfig(dir).alerts.dailyTokens, 0, `dailyTokens=${JSON.stringify(dailyTokens)}`);
+    }
+    // alerts 整体非对象回退默认。
+    for (const alerts of [null, 'x', 7, [1]]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts }));
+        assert.deepEqual(readConfig(dir).alerts, { dailyTokens: 0 });
+    }
+});
+
+test('readConfig: valid alerts.dailyTokens persists (boundary 0)', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyTokens: 0 } }));
+    assert.equal(readConfig(dir).alerts.dailyTokens, 0);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyTokens: 500000 } }));
+    assert.equal(readConfig(dir).alerts.dailyTokens, 500000);
+});
+
+test('readConfig: models.pricing keeps only valid numeric fields, drops entries without any', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        models: {
+            'claude-sonnet-5': { pricing: { input: 3, output: 15, cacheRead: 0.3, cacheCreation: 3.75, junk: 'x' } },
+            'bad-entry': { pricing: { input: 'free', output: -1 } },   // 无合法字段 → 剔除
+            'no-pricing': {},                                          // 缺 pricing → 剔除
+            'pricing-array': { pricing: [1, 2] }                       // pricing 为数组 → 剔除
+        }
+    }));
+    const models = readConfig(dir).models;
+    assert.deepEqual(models['claude-sonnet-5'], { input: 3, output: 15, cacheRead: 0.3, cacheCreation: 3.75 });
+    assert.equal(Object.keys(models).length, 1);
+});
+
+test('readConfig: invalid models container falls back to empty object', (t) => {
+    const dir = tmpDir(t);
+    for (const models of [null, 'x', 7, ['claude']]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ models }));
+        assert.deepEqual(readConfig(dir).models, {});
+    }
+});
+
+test('readConfig: flat models pricing format (entry itself) is accepted', (t) => {
+    const dir = tmpDir(t);
+    // 平铺格式：条目本身就是定价对象（无 pricing 包装层）。
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"models":{"m1":{"input":1}}}');
+    // null 原型容器：deepEqual 对原型敏感，逐键断言内容。
+    const models = readConfig(dir).models;
+    assert.deepEqual({ ...models }, { m1: { input: 1 } });
+});
+
+test('readConfig: dangerous model keys (__proto__/constructor) persist as own properties', (t) => {
+    const dir = tmpDir(t);
+    // 手写原始 JSON：JS 字面量 __proto__: 会设置原型而非自有键，JSON.stringify 后消失。
+    fs.writeFileSync(path.join(dir, 'config.json'),
+        '{"models":{"__proto__":{"pricing":{"input":1}},"constructor":{"pricing":{"output":2}}}}');
+    const models = readConfig(dir).models;
+    // null 原型容器下危险键为自有属性：可读回，不污染原型。
+    assert.deepEqual(models['__proto__'], { input: 1 });
+    assert.deepEqual(models['constructor'], { output: 2 });
+});
+
+test('writeConfig: alerts and models merge without losing sibling settings', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ alerts: { dailyTokens: 1000 }, models: { 'm1': { pricing: { input: 1 } } } }, dir);
+    // 二次写其他字段时 alerts / models 不被静默丢弃。
+    const out = writeConfig({ thinkingAsText: false }, dir);
+    assert.deepEqual(out.alerts, { dailyTokens: 1000 });
+    assert.deepEqual(out.models['m1'], { input: 1 });
+    assert.equal(out.thinkingAsText, false);
+});
+
+test('writeConfig: alerts partial merge keeps dailyTokens, models partial merge keeps other models', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ models: { 'm1': { pricing: { input: 1 } }, 'm2': { pricing: { output: 2 } } } }, dir);
+    const out = writeConfig({ models: { 'm3': { pricing: { cacheRead: 0.5 } } } }, dir);
+    assert.deepEqual(out.models['m1'], { input: 1 });
+    assert.deepEqual(out.models['m2'], { output: 2 });
+    assert.deepEqual(out.models['m3'], { cacheRead: 0.5 });
+});
+
 // ---------- 写入与合并 ----------
 
 test('writeConfig: creates dir and file, merged result returned', (t) => {
@@ -318,7 +409,10 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: true,
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {},
+        upstreams: []
     });
 
     out = writeConfig({ forwardSuggestionMode: false }, dir);
@@ -327,7 +421,10 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: false,
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {},
+        upstreams: []
     });
 
     out = writeConfig({ thinkingAsText: true }, dir);
@@ -336,7 +433,10 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: false,
         thinkingAsText: true,
         effortOverride: { enabled: false, level: 'low' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {},
+        upstreams: []
     });
 
     out = writeConfig({ effortOverride: { enabled: true, level: 'medium' } }, dir);
@@ -345,7 +445,10 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         forwardSuggestionMode: false,
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'medium' },
-        systemPromptOverride: { enabled: false, prompt: '' }
+        systemPromptOverride: { enabled: false, prompt: '' },
+        alerts: { dailyTokens: 0 },
+        models: {},
+        upstreams: []
     });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), out);
 });
@@ -401,4 +504,91 @@ test('defaultConfigPath: points at ~/.cc-proxy/config.json', () => {
 test('DEFAULT_CONFIG contains expected defaults and is frozen', () => {
     assert.deepEqual(DEFAULT_CONFIG, EXPECTED_DEFAULT_CONFIG);
     assert.ok(Object.isFrozen(DEFAULT_CONFIG));
+});
+
+// ---------- upstreams（多上游故障转移配置） ----------
+
+test('readConfig: valid upstream entries are kept with name defaulting to host', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [
+            { name: 'gw2', baseUrl: 'https://gw2.example.com', headers: { 'x-api-key': 'sk-2' } },
+            { baseUrl: 'https://gw3.example.com/api' }
+        ]
+    }));
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'gw2', baseUrl: 'https://gw2.example.com', headers: { 'x-api-key': 'sk-2' } },
+        { name: 'gw3.example.com', baseUrl: 'https://gw3.example.com/api' }
+    ]);
+});
+
+test('readConfig: upstream entries with unparsable baseUrl are dropped entirely', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [{ baseUrl: 'not a url' }, { name: 'ok', baseUrl: 'https://ok.example.com' }]
+    }));
+    // 非法 baseUrl 会让 resolveUpstream 抛错崩溃，配置侧整项丢弃。
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'ok', baseUrl: 'https://ok.example.com' }
+    ]);
+});
+
+test('readConfig: invalid upstream entries are dropped, non-array falls back to []', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [
+            null,
+            'x',
+            42,
+            [],
+            { baseUrl: '' },
+            { baseUrl: 123 },
+            { name: 'ok', baseUrl: 'https://ok.example.com' }
+        ]
+    }));
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'ok', baseUrl: 'https://ok.example.com' }
+    ]);
+
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ upstreams: 'nope' }));
+    assert.deepEqual(readConfig(dir).upstreams, []);
+});
+
+test('readConfig: invalid upstream headers drop only the headers field', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [
+            { name: 'a', baseUrl: 'https://a.example.com', headers: { k: 1 } },
+            { name: 'b', baseUrl: 'https://b.example.com', headers: ['x'] },
+            { name: 'c', baseUrl: 'https://c.example.com', headers: 'no' },
+            { name: 'd', baseUrl: 'https://d.example.com', headers: null }
+        ]
+    }));
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'a', baseUrl: 'https://a.example.com' },
+        { name: 'b', baseUrl: 'https://b.example.com' },
+        { name: 'c', baseUrl: 'https://c.example.com' },
+        { name: 'd', baseUrl: 'https://d.example.com' }
+    ]);
+});
+
+test('writeConfig: upstreams written to disk are preserved verbatim', (t) => {
+    const dir = tmpDir(t);
+    const upstreams = [
+        { name: 'gw2', baseUrl: 'https://gw2.example.com', headers: { 'x-api-key': 'sk-2' } }
+    ];
+    const out = writeConfig({ upstreams }, dir);
+    assert.deepEqual(out.upstreams, upstreams);
+    // 再次写其他字段时 upstreams 不被静默丢弃。
+    const out2 = writeConfig({ forwardSuggestionMode: true }, dir);
+    assert.deepEqual(out2.upstreams, upstreams);
+    assert.equal(out2.forwardSuggestionMode, true);
+    // normalizeConfig 仍会对回读值做清洗：非法项被移除。
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        forwardSuggestionMode: true,
+        upstreams: [{ name: 'gw2', baseUrl: 'https://gw2.example.com' }, { baseUrl: '' }]
+    }));
+    assert.deepEqual(writeConfig({ forwardSuggestionMode: false }, dir).upstreams, [
+        { name: 'gw2', baseUrl: 'https://gw2.example.com' }
+    ]);
 });

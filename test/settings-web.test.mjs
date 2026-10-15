@@ -54,6 +54,19 @@ test('page: explains suggestion forwarding and thinking text behavior', () => {
     assert.match(html, /下次启动会话生效/);
 });
 
+test('page: contains usage board nodes', () => {
+    const html = renderSettingsPage();
+
+    assert.match(html, /用量看板（近 7 天）/);
+    assert.match(html, /id="usageBoard"/);
+    assert.match(html, /id="usagePlaceholder"/);
+    assert.match(html, /usage-bars/);
+    assert.match(html, /usage-bar-fill/);
+    assert.match(html, /usage-table/);
+    assert.match(html, /alert-dot/);
+    assert.match(html, /\/api\/usage/);
+});
+
 test('page: contains no external resources or extra settings', () => {
     const html = renderSettingsPage();
 
@@ -98,6 +111,12 @@ function createPageElement({ disabled = false } = {}) {
         appendChild(child) {
             this.options.push(child);
         },
+        style: {},
+        // alert-dot 设置 aria-label 需要setAttribute。
+        setAttribute(name, value) {
+            this.attributes[name] = value;
+        },
+        attributes: {},
         classList: {
             toggle(name, force) {
                 const enabled = force ?? !classes.has(name);
@@ -167,7 +186,8 @@ function createPageHarness(fetchHandler) {
                 )?.[0] ?? ''
             )
         }),
-        status: createPageElement()
+        status: createPageElement(),
+        usageBoard: createPageElement()
     };
     const calls = [];
     class TestWritableStream {}
@@ -181,7 +201,8 @@ function createPageHarness(fetchHandler) {
     const vmContext = {
         document: {
             getElementById: (id) => elements[id],
-            createElement: () => createPageElement()
+            createElement: () => createPageElement(),
+            createTextNode: (text) => ({ textContent: text, nodeType: 3 })
         },
         fetch: async (url, options = {}) => {
             const call = { url, options };
@@ -234,6 +255,12 @@ test('page script: waits for bootstrap and initial load before enabling switches
     const settings = createPageDeferred();
     const page = createPageHarness(({ url }) => {
         if (url === '/api/bootstrap') return bootstrap.promise;
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, exceeded: false } }
+            });
+        }
         if (url === '/api/settings') return settings.promise;
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
@@ -253,6 +280,7 @@ test('page script: waits for bootstrap and initial load before enabling switches
 
     assert.deepEqual(page.calls.map(({ url }) => url), [
         '/api/bootstrap',
+        '/api/usage',
         '/api/settings',
         '/api/session'
     ]);
@@ -675,6 +703,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
 async function startApi({
     read,
     write,
+    envDir,
     createBootstrapNonce,
     bootstrapNonceTtlMs,
     maxBootstrapNonces,
@@ -686,6 +715,7 @@ async function startApi({
         expectedHost: () => `127.0.0.1:${server.address().port}`,
         read,
         write,
+        envDir,
         createBootstrapNonce,
         bootstrapNonceTtlMs,
         maxBootstrapNonces,
@@ -1176,7 +1206,10 @@ test(
                 forwardSuggestionMode: true,
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
-                systemPromptOverride: { enabled: false, prompt: '' }
+                systemPromptOverride: { enabled: false, prompt: '' },
+                alerts: { dailyTokens: 0 },
+                models: {},
+                upstreams: []
             }
         );
         assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
@@ -2732,4 +2765,208 @@ test('service: cleanup timeout prevents pending lifecycle hang', async () => {
     }), /open failed/);
     assert.ok(Date.now() - startedAt < 100);
     assert.equal(harness.closeCalls, 1);
+});
+
+test('API: GET /api/usage returns 7-day usage report', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-usage-api-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const usageFile = path.join(home, '.cc-proxy', 'usage.json');
+    fs.mkdirSync(path.dirname(usageFile), { recursive: true });
+    const dayKey = (offset) => {
+        const d = new Date();
+        d.setDate(d.getDate() - offset);
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${d.getFullYear()}-${m}-${day}`;
+    };
+    // 今日两条模型用量 + 3 天前旧格式（无 byModel）兼容数据。
+    fs.writeFileSync(usageFile, JSON.stringify({
+        [dayKey(0)]: {
+            requests: 2,
+            inputTokens: 100,
+            outputTokens: 50,
+            cacheReadTokens: 40,
+            cacheCreationTokens: 10,
+            byModel: {
+                'claude-sonnet-5': {
+                    requests: 2, inputTokens: 100,
+                    outputTokens: 50, cacheReadTokens: 40, cacheCreationTokens: 10
+                }
+            }
+        },
+        [dayKey(3)]: { requests: 1, inputTokens: 10, outputTokens: 5 }
+    }));
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            alerts: { dailyTokens: 0 },
+            models: {}
+        }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    const res = await fetch(`${api.origin}/api/usage`, { headers: authHeaders(api) });
+    assert.equal(res.status, 200);
+    const { ok, data } = await res.json();
+    assert.equal(ok, true);
+    assert.equal(data.days.length, 7);
+    const today = data.days[0];
+    assert.equal(today.date, dayKey(0));
+    assert.equal(today.requests, 2);
+    assert.equal(today.totalTokens, 200);
+    // 命中率 = cacheRead / (cacheRead + cacheCreation + input) = 40/150。
+    assert.ok(Math.abs(today.hitRate - 40 / 150) < 1e-9);
+    // claude-sonnet-5 有定价：(100*3 + 50*15 + 40*0.3 + 10*3.75) / 1e6。
+    const expectedCost = (100 * 3 + 50 * 15 + 40 * 0.3 + 10 * 3.75) / 1e6;
+    assert.ok(Math.abs(today.cost - expectedCost) < 1e-12);
+    assert.equal(today.byModel['claude-sonnet-5'].requests, 2);
+
+    // 3 天前旧格式条目：byModel 回退空，无模型则 cost 为 null。
+    const older = data.days[3];
+    assert.equal(older.date, dayKey(3));
+    assert.equal(older.requests, 1);
+    assert.equal(older.cost, null);
+
+    // 无用量的日子：hitRate/cost 均为 null。
+    const empty = data.days[1];
+    assert.equal(empty.requests, 0);
+    assert.equal(empty.hitRate, null);
+    assert.equal(empty.cost, null);
+
+    // 告警未配置（0）：不判超限。
+    assert.deepEqual(data.alert, { dailyTokens: 0, exceeded: false });
+});
+
+test('API: /api/usage alert exceeded when threshold configured', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-usage-alert-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const usageFile = path.join(home, '.cc-proxy', 'usage.json');
+    fs.mkdirSync(path.dirname(usageFile), { recursive: true });
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    fs.writeFileSync(usageFile, JSON.stringify({
+        [`${d.getFullYear()}-${m}-${day}`]: {
+            requests: 1, inputTokens: 500, outputTokens: 0
+        }
+    }));
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            alerts: { dailyTokens: 100 },
+            models: {}
+        }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    const res = await fetch(`${api.origin}/api/usage`, { headers: authHeaders(api) });
+    const { data } = await res.json();
+    assert.deepEqual(data.alert, { dailyTokens: 100, exceeded: true });
+});
+
+test('page script: renderUsageBoard renders bars, summary and per-model table', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    days: [
+                        {
+                            date: '2026-10-15', requests: 2, totalTokens: 500,
+                            hitRate: 0.5, cost: 1.25,
+                            byModel: { 'claude-sonnet-5': { requests: 2 } }
+                        },
+                        {
+                            date: '2026-10-14', requests: 1, totalTokens: 200,
+                            hitRate: null, cost: null, byModel: {}
+                        }
+                    ],
+                    alert: { dailyTokens: 1000, exceeded: true }
+                }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.usageBoard;
+    // 柱状图：2 根柱，今日超阈值红柱 + 明日正常柱（append 收集于 options）。
+    const bars = board.options.find((el) => el.className === 'usage-bars');
+    assert.ok(bars);
+    assert.equal(bars.options.length, 2);
+    const todayBar = bars.options[0];
+    const todayFill = todayBar.options[0];
+    assert.ok(todayFill.className.includes('alert'));
+    assert.equal(todayFill.style.height, '100%');
+    const yesterdayFill = bars.options[1].options[0];
+    assert.equal(yesterdayFill.className, 'usage-bar-fill');
+    assert.equal(yesterdayFill.style.height, '40%');
+    assert.equal(todayBar.options[1].textContent, '10-15');
+
+    // 汇总行：红点 + 今日 tokens/命中率/费用文本。
+    const summary = board.options.find((el) => el.className === 'usage-summary');
+    assert.ok(summary);
+    assert.equal(summary.options[0].className, 'alert-dot');
+    assert.match(
+        String(summary.options[1].textContent),
+        /今日用量已超阈值/
+    );
+    assert.match(
+        String(summary.options[2].textContent),
+        /今日 500 tokens · 命中率 50\.0% · 费用 \$1\.25/
+    );
+
+    // 按模型表：表头 + 模型名经 textContent 渲染。
+    const table = board.options.find((el) => el.className === 'usage-table');
+    assert.ok(table);
+    assert.deepEqual(
+        table.options[0].options.map((th) => th.textContent),
+        ['模型', '请求', '输入', '输出', '缓存读', '缓存写']
+    );
+    assert.equal(table.options[1].options[0].textContent, 'claude-sonnet-5');
+});
+
+test('API: /api/usage rejects invalid token and non-GET', async (t) => {
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    const unauthorized = await fetch(`${api.origin}/api/usage`);
+    assert.equal(unauthorized.status, 401);
+
+    const post = await fetch(`${api.origin}/api/usage`, {
+        method: 'POST',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: '{}'
+    });
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET');
 });
