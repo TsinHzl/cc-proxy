@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
 import { createUsageTracker } from '../src/usage.js';
 import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
+import { createUpstreamHealthTracker } from '../src/upstream-health.js';
 import { cacheHitRate } from '../src/pricing.js';
 import { readConfig } from '../src/settings.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
@@ -74,6 +75,9 @@ export function main({
 
     const usageTracker = createTracker();
     const latencyTracker = createLatency();
+    // 上游健康统计（被动埋点）：防抖落盘 ~/.cc-proxy/runtime/upstream-health.json，
+    // 供设置页 /api/upstream-health 只读展示。
+    const upstreamHealth = createUpstreamHealthTracker();
     const settings = readSettings();
     const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = settings;
     // 当日用量告警：仅当 config 配置了 alerts.dailyTokens（> 0）且当日累计
@@ -91,6 +95,7 @@ export function main({
         baseUrlEnv: originalBase,
         usageTracker,
         latencyTracker,
+        upstreamHealth,
         forwardSuggestionMode,
         thinkingAsText,
         effortOverride,
@@ -133,6 +138,8 @@ export function main({
                 const latencyLine = formatLatencySummary(latencyTracker.summary());
                 if (latencyLine) warn(`[claude-proxy] ${latencyLine}`);
             }
+            // 进程退出同步 flush 最终健康快照（绕过防抖定时器）。
+            upstreamHealth.flushNow();
             server.close();
             if (signal) process.kill(process.pid, signal);
             process.exit(code ?? 0);

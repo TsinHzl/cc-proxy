@@ -153,6 +153,7 @@ export function createProxyServer({
     effortOverride = null,
     systemPromptOverride = null,
     systemPromptCapture = null,
+    upstreamHealth = null,
     failoverUpstreams = []
 } = {}) {
     // 备用上游启动时解析一次并固定（不热加载）：baseUrl 复用主上游的
@@ -271,6 +272,19 @@ export function createProxyServer({
             // 感知的首字节口径），连接失败路径保持 0（无真实 TTFB）。
             let sampled = false;
             let ttfbAt = 0;
+            // 上游健康埋点：activeUpstreamId 跟随故障转移切换（onFailover 更新），
+            // 响应头到达 / 失败回调据此归属统计。
+            let activeUpstreamId = target.host;
+            const recordUpstreamHealth = (ok, ttftMs = null) => {
+                if (!upstreamHealth) return;
+                if (ok) {
+                    upstreamHealth.recordRequest(activeUpstreamId, { ok: true, ttftMs });
+                } else {
+                    // 流中失败：请求已由响应头到达时的成功样本计数，这里仅补记
+                    // failures，避免 requests 分母重复计数。
+                    upstreamHealth.recordFailure(activeUpstreamId);
+                }
+            };
             const recordLatency = (status) => {
                 if (sampled) return;
                 sampled = true;
@@ -288,6 +302,9 @@ export function createProxyServer({
                 const responseIsSse = contentType.includes('text/event-stream');
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 ttfbAt = Date.now();
+                // 响应头到达即记成功样本（含最终返回 4xx/5xx 的上���——该上游
+                // 本身可达，连接面是健康的）。
+                recordUpstreamHealth(true, ttfbAt - requestStartedAt.getTime());
 
                 // Non-CC clients: everything verbatim.
                 if (!isClaudeCode) {
@@ -311,6 +328,7 @@ export function createProxyServer({
                     // 从统计中静默消失导致 p50/p95 偏乐观。
                     upstreamRes.on('error', () => {
                         recordLatency(0);
+                        recordUpstreamHealth(false);
                         if (!res.headersSent) res.end();
                     });
                     upstreamRes.on('end', () => {
@@ -367,11 +385,15 @@ export function createProxyServer({
                         res.end();
                         // 流已失败，状态码不再可信，记 0 哨兵而非上游 200。
                         recordLatency(0);
+                        // 客户端主动断开（Ctrl+C/断连）不是上游故障，不计失败。
+                        if (!res.destroyed && !res.writableEnded) recordUpstreamHealth(false);
                         dbg.requestEnd(logStream, `error: ${err.message}`, requestStartedAt);
                     }
                 })();
             }, (err) => {
                 logger.error('[cc-proxy] upstream error:', err.message);
+                // 连接级失败（未收到上游响应）计入失败样本。
+                recordUpstreamHealth(false);
                 // 连接级失败（未收到上游响应）也落盘：排查网关兼容性最需要这段。
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 dbg.requestEnd(logStream, `upstream error: ${err.message}`, requestStartedAt);
@@ -383,7 +405,15 @@ export function createProxyServer({
                     type: 'error',
                     error: { type: 'api_error', message: `upstream request failed: ${err.message}` }
                 }));
-            }, { isClientGone: () => res.destroyed || res.writableEnded });
+            }, {
+                isClientGone: () => res.destroyed || res.writableEnded,
+                // 故障转移埋点：切换事件（时间+原因）入环形缓冲，后续样本归属新上游。
+                onFailover: (from, to, reason) => {
+                    if (!upstreamHealth) return;
+                    upstreamHealth.recordFailover(from, to, reason);
+                    activeUpstreamId = to;
+                }
+            });
         });
     });
 }

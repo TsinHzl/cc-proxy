@@ -57,7 +57,7 @@ function toEntry(item) {
  *     request; a bare target object is accepted for the single-upstream case
  * @param {(upstreamRes: http.IncomingMessage) => void} respond
  * @param {(err: Error) => void} onError
- * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string) => void}} [options]
+ * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string) => void}} [options]
  */
 export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onError, { isClientGone = () => false, onFailover = null } = {}) {
     const entries = (Array.isArray(targets) ? targets : [targets]).map(toEntry).filter(Boolean);
@@ -73,7 +73,7 @@ export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onErr
             if (entryIdx + 1 >= entries.length) return false;
             const next = entries[entryIdx + 1];
             logger.warn(`[cc-proxy] upstream ${labelOf(entry)} failed (${reason}), failing over to ${labelOf(next)}`);
-            if (onFailover) onFailover(labelOf(entry), labelOf(next));
+            if (onFailover) onFailover(labelOf(entry), labelOf(next), reason);
             attempt(entryIdx + 1, RETRY_DELAYS_MS.length);
             return true;
         };
