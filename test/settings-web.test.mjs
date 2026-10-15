@@ -72,6 +72,17 @@ test('page: contains usage board nodes', () => {
     assert.match(html, /alert-dot\.warn/);
 });
 
+test('page: contains upstream health board nodes', () => {
+    const html = renderSettingsPage();
+
+    assert.match(html, /上游状态/);
+    assert.match(html, /id="healthBoard"/);
+    assert.match(html, /id="healthPlaceholder"/);
+    assert.match(html, /aria-label="上游状态"/);
+    assert.match(html, /\/api\/upstream-health/);
+    assert.match(html, /暂无上游请求数据/);
+});
+
 test('page: contains no external resources or extra settings', () => {
     const html = renderSettingsPage();
 
@@ -197,7 +208,9 @@ function createPageHarness(fetchHandler) {
             )
         }),
         status: createPageElement(),
-        usageBoard: createPageElement()
+        usageBoard: createPageElement(),
+        healthBoard: createPageElement(),
+        healthPlaceholder: createPageElement()
     };
     const calls = [];
     // 导出下载链路：记录 createElement 产物与 blob URL 生命周期。
@@ -292,6 +305,9 @@ test('page script: waits for bootstrap and initial load before enabling switches
                 data: { days: [], alert: { dailyTokens: 0, exceeded: false } }
             });
         }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
         if (url === '/api/settings') return settings.promise;
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
@@ -312,6 +328,7 @@ test('page script: waits for bootstrap and initial load before enabling switches
     assert.deepEqual(page.calls.map(({ url }) => url), [
         '/api/bootstrap',
         '/api/usage',
+        '/api/upstream-health',
         '/api/settings',
         '/api/session'
     ]);
@@ -1695,6 +1712,64 @@ test('API: captured-system-prompt rejects invalid token and non-GET', async (t) 
     assert.equal(post.headers.get('allow'), 'GET');
 });
 
+test('API: GET /api/upstream-health returns snapshot, empty fallback and 405', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-health-api-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const healthFile = path.join(home, '.cc-proxy', 'runtime', 'upstream-health.json');
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    // 缺失文件：返回空快照而非报错。
+    const missing = await fetch(`${api.origin}/api/upstream-health`, { headers: authHeaders(api) });
+    assert.equal(missing.status, 200);
+    const missingBody = await missing.json();
+    assert.equal(missingBody.ok, true);
+    assert.deepEqual(missingBody.data, { updatedAt: null, upstreams: [], failovers: [] });
+
+    // 落盘快照：原样读回（只读不缓存，每次请求重读文件）。
+    fs.mkdirSync(path.dirname(healthFile), { recursive: true });
+    const snapshot = {
+        updatedAt: '2026-10-15T08:00:00.000Z',
+        upstreams: [{
+            id: 'api.anthropic.com',
+            requests: 4, failures: 1,
+            ttftP50: 120, ttftP95: 480, samples: 3
+        }],
+        failovers: [{ time: '2026-10-15T08:00:00.000Z', from: 'a', to: 'b', reason: 'HTTP 429' }]
+    };
+    fs.writeFileSync(healthFile, JSON.stringify(snapshot));
+    const ok = await fetch(`${api.origin}/api/upstream-health`, { headers: authHeaders(api) });
+    assert.equal(ok.status, 200);
+    const okBody = await ok.json();
+    assert.equal(okBody.ok, true);
+    assert.deepEqual(okBody.data, snapshot);
+
+    // 损坏文件：回退空快照。
+    fs.writeFileSync(healthFile, '{not json');
+    const corrupt = await fetch(`${api.origin}/api/upstream-health`, { headers: authHeaders(api) });
+    assert.deepEqual((await corrupt.json()).data, { updatedAt: null, upstreams: [], failovers: [] });
+
+    // 非 GET：405 + Allow。
+    const post = await fetch(`${api.origin}/api/upstream-health`, {
+        method: 'POST',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: '{}'
+    });
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET');
+
+    // 无 token：401（认证链在 handler 之前统一执行）。
+    const unauthorized = await fetch(`${api.origin}/api/upstream-health`);
+    assert.equal(unauthorized.status, 401);
+});
+
 test('API: rejects invalid token, Host and Origin without writes', async (t) => {
     let writes = 0;
     const api = await startApi({
@@ -3050,6 +3125,9 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
                 }
             });
         }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3153,6 +3231,9 @@ test('page script: usage alert warn level renders yellow bar, dot and ratio', as
                 }
             });
         }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3201,6 +3282,9 @@ test('page script: export buttons fetch with token and trigger download', async 
                 blob: async () => 'BLOB',
                 json: async () => { throw new Error('no json'); }
             };
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
@@ -3259,6 +3343,9 @@ test('page script: export buttons fetch with token and trigger download', async 
             });
         }
         if (url.startsWith('/api/usage/export')) return pageJsonResponse(500, { ok: false });
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3293,6 +3380,9 @@ test('page script: export buttons fetch with token and trigger download', async 
         }
         if (url.startsWith('/api/usage/export')) {
             return { ok: true, blob: async () => { throw new Error('boom'); } };
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);

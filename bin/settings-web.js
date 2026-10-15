@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readConfig, writeConfig } from '../src/settings.js';
 import { defaultUsagePath, readRecentDays } from '../src/usage.js';
+import { readHealthSnapshot, defaultHealthPath } from '../src/upstream-health.js';
 import { estimateCost, cacheHitRate, computeUsageAlert } from '../src/pricing.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import {
@@ -483,6 +484,24 @@ async function handleSettingsApiRequest(
         sendJson(res, 200, {
             ok: true,
             data: buildUsageReport(context.envDir, context.read)
+        });
+        return;
+    }
+    if (url.pathname === '/api/upstream-health') {
+        if (req.method !== 'GET') {
+            sendJson(
+                res,
+                405,
+                { ok: false, error: '请求方法不支持' },
+                { allow: 'GET' }
+            );
+            return;
+        }
+        // 与用量数据同口径：固定读全局 ~/.cc-proxy 落盘快照，只读不缓存，
+        // 缺失/损坏由 readHealthSnapshot 回退空快照。
+        sendJson(res, 200, {
+            ok: true,
+            data: readHealthSnapshot(defaultHealthPath())
         });
         return;
     }

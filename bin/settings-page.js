@@ -2,6 +2,7 @@
 // 脚本状态机：初始 disabled → bootstrap+load+lease 全成功后启用 → PATCH 期间禁用
 // → 成功采权威快照 / 失败回滚 → 租约断开后保持禁用（setDisabled 由状态派生）。
 import { USAGE_BOARD_SCRIPT } from './settings-page-usage.js';
+import { HEALTH_BOARD_SCRIPT } from './settings-page-health.js';
 
 const PAGE_STYLES = `
 :root {
@@ -180,6 +181,12 @@ const PAGE_BODY = `
     <section class="card usage-card" aria-label="用量看板">
         <div id="usageBoard" aria-live="polite">
             <p id="usagePlaceholder" class="usage-empty">用量数据加载中…</p>
+        </div>
+    </section>
+    <p class="section-title">上游状态</p>
+    <section class="card usage-card" aria-label="上游状态">
+        <div id="healthBoard" aria-live="polite">
+            <p id="healthPlaceholder" class="usage-empty">上游状态加载中…</p>
         </div>
     </section>
     <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -636,11 +643,12 @@ const PAGE_SCRIPT = `
         return response.body;
     }
 
-` + USAGE_BOARD_SCRIPT + `
+` + USAGE_BOARD_SCRIPT + HEALTH_BOARD_SCRIPT + `
 
     async function initialize() {
         await bootstrap();
         loadUsageBoard();
+        loadUpstreamHealth();
         const [, body] = await Promise.all([load(), openLease()]);
         leaseActive = true;
         setDisabled(false);
