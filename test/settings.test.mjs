@@ -12,7 +12,8 @@ const EXPECTED_DEFAULT_CONFIG = {
     effortOverride: { enabled: true, level: 'high' },
     systemPromptOverride: { enabled: false, prompt: '' },
     alerts: { dailyTokens: 0 },
-    models: {}
+    models: {},
+    upstreams: []
 };
 
 function tmpDir(t) {
@@ -74,7 +75,8 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         effortOverride: { enabled: true, level: 'high' },
         systemPromptOverride: { enabled: false, prompt: '' },
         alerts: { dailyTokens: 0 },
-        models: {}
+        models: {},
+        upstreams: []
     });
 });
 
@@ -409,7 +411,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
         alerts: { dailyTokens: 0 },
-        models: {}
+        models: {},
+        upstreams: []
     });
 
     out = writeConfig({ forwardSuggestionMode: false }, dir);
@@ -420,7 +423,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
         alerts: { dailyTokens: 0 },
-        models: {}
+        models: {},
+        upstreams: []
     });
 
     out = writeConfig({ thinkingAsText: true }, dir);
@@ -431,7 +435,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
         alerts: { dailyTokens: 0 },
-        models: {}
+        models: {},
+        upstreams: []
     });
 
     out = writeConfig({ effortOverride: { enabled: true, level: 'medium' } }, dir);
@@ -442,7 +447,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         effortOverride: { enabled: true, level: 'medium' },
         systemPromptOverride: { enabled: false, prompt: '' },
         alerts: { dailyTokens: 0 },
-        models: {}
+        models: {},
+        upstreams: []
     });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), out);
 });
@@ -498,4 +504,91 @@ test('defaultConfigPath: points at ~/.cc-proxy/config.json', () => {
 test('DEFAULT_CONFIG contains expected defaults and is frozen', () => {
     assert.deepEqual(DEFAULT_CONFIG, EXPECTED_DEFAULT_CONFIG);
     assert.ok(Object.isFrozen(DEFAULT_CONFIG));
+});
+
+// ---------- upstreams（多上游故障转移配置） ----------
+
+test('readConfig: valid upstream entries are kept with name defaulting to host', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [
+            { name: 'gw2', baseUrl: 'https://gw2.example.com', headers: { 'x-api-key': 'sk-2' } },
+            { baseUrl: 'https://gw3.example.com/api' }
+        ]
+    }));
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'gw2', baseUrl: 'https://gw2.example.com', headers: { 'x-api-key': 'sk-2' } },
+        { name: 'gw3.example.com', baseUrl: 'https://gw3.example.com/api' }
+    ]);
+});
+
+test('readConfig: upstream entries with unparsable baseUrl are dropped entirely', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [{ baseUrl: 'not a url' }, { name: 'ok', baseUrl: 'https://ok.example.com' }]
+    }));
+    // 非法 baseUrl 会让 resolveUpstream 抛错崩溃，配置侧整项丢弃。
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'ok', baseUrl: 'https://ok.example.com' }
+    ]);
+});
+
+test('readConfig: invalid upstream entries are dropped, non-array falls back to []', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [
+            null,
+            'x',
+            42,
+            [],
+            { baseUrl: '' },
+            { baseUrl: 123 },
+            { name: 'ok', baseUrl: 'https://ok.example.com' }
+        ]
+    }));
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'ok', baseUrl: 'https://ok.example.com' }
+    ]);
+
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ upstreams: 'nope' }));
+    assert.deepEqual(readConfig(dir).upstreams, []);
+});
+
+test('readConfig: invalid upstream headers drop only the headers field', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        upstreams: [
+            { name: 'a', baseUrl: 'https://a.example.com', headers: { k: 1 } },
+            { name: 'b', baseUrl: 'https://b.example.com', headers: ['x'] },
+            { name: 'c', baseUrl: 'https://c.example.com', headers: 'no' },
+            { name: 'd', baseUrl: 'https://d.example.com', headers: null }
+        ]
+    }));
+    assert.deepEqual(readConfig(dir).upstreams, [
+        { name: 'a', baseUrl: 'https://a.example.com' },
+        { name: 'b', baseUrl: 'https://b.example.com' },
+        { name: 'c', baseUrl: 'https://c.example.com' },
+        { name: 'd', baseUrl: 'https://d.example.com' }
+    ]);
+});
+
+test('writeConfig: upstreams written to disk are preserved verbatim', (t) => {
+    const dir = tmpDir(t);
+    const upstreams = [
+        { name: 'gw2', baseUrl: 'https://gw2.example.com', headers: { 'x-api-key': 'sk-2' } }
+    ];
+    const out = writeConfig({ upstreams }, dir);
+    assert.deepEqual(out.upstreams, upstreams);
+    // 再次写其他字段时 upstreams 不被静默丢弃。
+    const out2 = writeConfig({ forwardSuggestionMode: true }, dir);
+    assert.deepEqual(out2.upstreams, upstreams);
+    assert.equal(out2.forwardSuggestionMode, true);
+    // normalizeConfig 仍会对回读值做清洗：非法项被移除。
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        forwardSuggestionMode: true,
+        upstreams: [{ name: 'gw2', baseUrl: 'https://gw2.example.com' }, { baseUrl: '' }]
+    }));
+    assert.deepEqual(writeConfig({ forwardSuggestionMode: false }, dir).upstreams, [
+        { name: 'gw2', baseUrl: 'https://gw2.example.com' }
+    ]);
 });

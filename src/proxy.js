@@ -150,8 +150,31 @@ export function createProxyServer({
     thinkingAsText = true,
     effortOverride = null,
     systemPromptOverride = null,
-    systemPromptCapture = null
+    systemPromptCapture = null,
+    failoverUpstreams = []
 } = {}) {
+    // 备用上游启动时解析一次并固定（不热加载）：baseUrl 复用主上游的
+    // resolveUpstream 语义取 base 路径前缀，请求侧再拼接实际 path；
+    // headers/name 逐项透传给转发层。
+    const failoverBases = (Array.isArray(failoverUpstreams) ? failoverUpstreams : [])
+        .map((item) => {
+            try {
+                const base = resolveUpstream('', item.baseUrl);
+                return {
+                    base: { protocol: base.protocol, host: base.host, port: base.port },
+                    basePath: base.path,
+                    headers: item.headers,
+                    name: item.name
+                };
+            } catch {
+                // 非法 baseUrl（配置写入侧已过滤，此处兜底）跳过该项，不让
+                // 单条坏配置阻塞代理启动。
+                logger.warn(`[cc-proxy] skipping failover upstream with invalid baseUrl`);
+                return null;
+            }
+        })
+        .filter(Boolean);
+
     const usage = usageTracker ?? null;
     // 关闭态 debug-log 的方法为 null，归一为可调用的空实现，调用点无需判空。
     const rawDbg = debugLog ?? createDebugLog(); // 默认关闭：零开销空实现
@@ -166,6 +189,17 @@ export function createProxyServer({
         req.on('end', () => {
             const bodyBuffer = Buffer.concat(chunks);
             const target = resolveUpstream(req.url, baseUrlEnv);
+            // targets 列表：首项主上游，其后为备用上游（同 path 拼接、各自 headers）。
+            const targets = [
+                target,
+                ...failoverBases.map((f) => ({
+                    target: { protocol: f.base.protocol, host: f.base.host,
+                        port: f.base.port, path: `${f.basePath}${req.url}` },
+                    headers: f.headers,
+                    name: f.name
+                }))
+            ];
+
             const isClaudeCode = isClaudeCodeUserAgent(req.headers['user-agent']);
             const requestStartedAt = new Date();
 
@@ -230,7 +264,7 @@ export function createProxyServer({
                 }
             }
 
-            forwardRequestWithRetry(req, body, target, (upstreamRes) => {
+            forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
                 const logStream = dbg.requestStart(req, bodyBuffer);

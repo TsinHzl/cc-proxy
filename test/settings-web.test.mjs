@@ -1208,7 +1208,8 @@ test(
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
                 alerts: { dailyTokens: 0 },
-                models: {}
+                models: {},
+                upstreams: []
             }
         );
         assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);

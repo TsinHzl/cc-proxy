@@ -83,6 +83,33 @@ ANTHROPIC_BASE_URL=https://gw.example.com/api cc-proxy
 > The variable is saved as the forwarding target first, then replaced with the local
 > address for claude, so your existing configuration is not lost.
 
+### Multi-upstream failover
+
+Configure an `upstreams` array in `~/.cc-proxy/config.json` to enable backup
+upstreams (read once and fixed at startup):
+
+```json
+{
+  "upstreams": [
+    { "name": "backup-a", "baseUrl": "https://gw-a.example.com/api", "headers": { "x-api-key": "sk-a" } },
+    { "name": "backup-b", "baseUrl": "https://gw-b.example.com" }
+  ]
+}
+```
+
+Requests are forwarded in order: primary upstream (`ANTHROPIC_BASE_URL`) → each
+entry of `upstreams`. The primary gets same-upstream retries on 502/503/529
+(1s/2s/4s); once exhausted — or immediately on 429/500, or after connection-level
+failures exhaust retries — it fails over to the next backup upstream, merging that
+entry's `headers` (e.g. its own API key). If all upstreams fail, the client
+receives the last error response. `name` defaults to the host; `baseUrl` path
+prefix handling matches the primary upstream.
+
+> Keys in `headers` are stored only in `~/.cc-proxy/config.json` (file mode 0600)
+> and never printed to logs. The startup banner and failover events are visible
+> with `CC_PROXY_LOG=1`, silent by default. Without `upstreams` configured,
+> behavior is identical to before.
+
 ### Rendering
 
 Applies only when the client UA matches `claude-cli` / `claude-code`; thinking blocks

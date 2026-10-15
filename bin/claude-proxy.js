@@ -93,12 +93,21 @@ export function main({
         systemPromptOverride,
         systemPromptCapture: createSystemPromptCapture({
             file: capturedSystemPromptPath()
-        })
+        }),
+        // 备用上游启动时读取一次并固定（不热加载）；mock 的 settings 可能
+        // 缺少该键，兜底为空数组。
+        failoverUpstreams: settings.upstreams || []
     });
 
     server.listen(0, '127.0.0.1', () => {
         const { port } = server.address();
         logger.warn(`[claude-proxy] listening on http://127.0.0.1:${port} (upstream: ${originalBase || 'https://api.anthropic.com'})`);
+        // 配置了备用上游时追加 failover 列表行（默认静默，CC_PROXY_LOG=1 可见）。
+        const failovers = (Array.isArray(settings.upstreams) ? settings.upstreams : [])
+            .filter((u) => u && typeof u === 'object' && u.baseUrl);
+        if (failovers.length) {
+            warn(`[claude-proxy] failover upstreams: ${failovers.map((u) => u.name).join(', ')}`);
+        }
 
         const child = spawnProcess(CLAUDE_BIN, argv.slice(2), {
             stdio: 'inherit',

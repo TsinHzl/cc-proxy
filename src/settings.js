@@ -23,7 +23,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     alerts: { dailyTokens: 0 },
     // 模型定价覆盖（每百万 token 美元）：models.<model>.pricing =
     // { input, output, cacheRead, cacheCreation }，未收录模型不显示费用。
-    models: {}
+    models: {},
+    // 备用上游数组（多上游故障转移）：每项 { name, baseUrl, headers? }，
+    // 主上游重试耗尽后依次切换；空数组表示未配置（单上游，行为与现状一致）。
+    upstreams: []
 });
 
 const MIN_LINES = 1;
@@ -49,7 +52,8 @@ function normalizeConfig(raw) {
         effortOverride: { ...DEFAULT_CONFIG.effortOverride },
         systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride },
         alerts: { ...DEFAULT_CONFIG.alerts },
-        models: {}
+        models: {},
+        upstreams: []
     };
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return config;
     const tw = raw.thinkingWindow;
@@ -107,6 +111,34 @@ function normalizeConfig(raw) {
             config.models = pricingByModel;
         }
     }
+    const upstreams = raw.upstreams;
+    if (Array.isArray(upstreams)) {
+        const cleanUpstreams = [];
+        for (const item of upstreams) {
+            // 每项须为非数组对象且 baseUrl 为可解析的合法 URL，非法项整项丢弃
+            // （非法 baseUrl 会让代理启动时 resolveUpstream 抛错崩溃）。
+            if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+            if (typeof item.baseUrl !== 'string' || !item.baseUrl) continue;
+            let host;
+            try {
+                host = new URL(item.baseUrl).host;
+            } catch {
+                continue;
+            }
+            const name = (typeof item.name === 'string' && item.name) ? item.name : host;
+            const clean = { name, baseUrl: item.baseUrl };
+            // headers 须为字符串键值对象，非法时仅丢弃该字段，不丢整项。
+            if (item.headers !== undefined) {
+                const headers = item.headers;
+                if (headers && typeof headers === 'object' && !Array.isArray(headers)
+                    && Object.values(headers).every((v) => typeof v === 'string')) {
+                    clean.headers = { ...headers };
+                }
+            }
+            cleanUpstreams.push(clean);
+        }
+        config.upstreams = cleanUpstreams;
+    }
     return config;
 }
 
@@ -150,7 +182,8 @@ export function writeConfig(partial, envDir) {
         models:
             partial?.models && typeof partial.models === 'object' && !Array.isArray(partial.models)
                 ? { ...current.models, ...partial.models }
-                : current.models
+                : current.models,
+        upstreams: Array.isArray(partial?.upstreams) ? partial.upstreams : current.upstreams
     });
     fs.mkdirSync(dir, { recursive: true });
     let mode = 0o600;

@@ -77,6 +77,29 @@ ANTHROPIC_BASE_URL=https://gw.example.com/api cc-proxy
 
 > 代理会先把该变量保存为转发目标，再替换为本地地址传给 claude，因此原有配置不会丢失。
 
+### 多上游故障转移
+
+在 `~/.cc-proxy/config.json` 中配置 `upstreams` 数组可启用备用上游（启动时读取一次并固定）：
+
+```json
+{
+  "upstreams": [
+    { "name": "backup-a", "baseUrl": "https://gw-a.example.com/api", "headers": { "x-api-key": "sk-a" } },
+    { "name": "backup-b", "baseUrl": "https://gw-b.example.com" }
+  ]
+}
+```
+
+请求按顺序转发：主上游（`ANTHROPIC_BASE_URL`）→ `upstreams` 数组各项。主上游对
+502/503/529 做同上游重试（1s/2s/4s）耗尽，或遇到 429/500（立即切换）、连接级失败
+（同上游重试耗尽）后，切到下一个备用上游，并合并该项 `headers`（如各自的 API
+key）。全部上游失败时，客户端收到最后一个错误响应。`name` 缺省取 host；
+`baseUrl` 路径前缀拼接规则与主上游一致。
+
+> `headers` 中的密钥仅保存在 `~/.cc-proxy/config.json`（文件权限 0600），不打印
+> 到日志。启动横幅与切换事件通过 `CC_PROXY_LOG=1` 可见，默认静默。未配置
+> `upstreams` 时行为与现状完全一致。
+
 ### 渲染效果
 
 仅当客户端 UA 匹配 `claude-cli` / `claude-code` 时生效，thinking 块会被改写为：
