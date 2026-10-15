@@ -1,6 +1,7 @@
 // 设置页 HTML 渲染：样式常量、内联脚本与组装函数。
 // 脚本状态机：初始 disabled → bootstrap+load+lease 全成功后启用 → PATCH 期间禁用
 // → 成功采权威快照 / 失败回滚 → 租约断开后保持禁用（setDisabled 由状态派生）。
+import { USAGE_BOARD_SCRIPT } from './settings-page-usage.js';
 
 const PAGE_STYLES = `
 :root {
@@ -13,6 +14,7 @@ const PAGE_STYLES = `
     --accent: #2bbbad;
     --switch-off: #30353d;
     --error: #f07178;
+    --warn: #e5c07b;
 }
 * { box-sizing: border-box; }
 body {
@@ -84,9 +86,11 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-bar { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
 .usage-bar-fill { width: 100%; max-width: 48px; min-height: 2px; border-radius: 3px 3px 0 0; background: var(--accent); }
 .usage-bar-fill.alert { background: var(--error); }
+.usage-bar-fill.warn { background: var(--warn); }
 .usage-bar-label { font-size: 9px; color: var(--muted); white-space: nowrap; }
 .usage-summary { margin: 8px 4px 0; font-size: 12px; color: var(--muted); }
 .usage-summary .alert-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; background: var(--error); }
+.usage-summary .alert-dot.warn { background: var(--warn); }
 .usage-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
 .usage-table th, .usage-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .usage-table th { color: var(--muted); font-weight: normal; }
@@ -94,6 +98,9 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-tabs { display: flex; gap: 6px; margin: 0 4px 8px; }
 .usage-tab { padding: 3px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
 .usage-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.usage-export { display: flex; gap: 6px; margin: 0 4px 8px; }
+.usage-export-btn { padding: 3px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
+.usage-export-btn:hover { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 640px) {
     main { width: calc(100% - 24px); padding: 12px 0; }
     header { display: block; }
@@ -629,216 +636,7 @@ const PAGE_SCRIPT = `
         return response.body;
     }
 
-    // 用量看板：bootstrap 取到 token 后并行拉取，失败静默降级，绝不阻断设置功能。
-    function formatTokens(value) {
-        if (!Number.isInteger(value) || value <= 0) return '0';
-        if (value >= 1000000) return (value / 1000000).toFixed(1) + 'M';
-        if (value >= 1000) return (value / 1000).toFixed(1) + 'k';
-        return String(value);
-    }
-
-    function formatCost(cost) {
-        // 未配置/未收录模型时 cost 为 null：显示占位而非报错。
-        if (cost === null || cost === undefined) return '';
-        return '$' + cost.toFixed(2);
-    }
-
-    function formatHitRate(hitRate) {
-        if (hitRate === null || hitRate === undefined) return 'n/a';
-        return (hitRate * 100).toFixed(1) + '%';
-    }
-
-    function formatDayLabel(date) {
-        const parts = typeof date === 'string' ? date.split('-') : [];
-        return parts.length === 3 ? parts[1] + '-' + parts[2] : String(date ?? '');
-    }
-
-    // 用量看板三种时间维度：今日 / 七天 / 一个月（30 天），Tab 点击切换。
-    const RANGES = [
-        { key: 'today', label: '今日', days: 1 },
-        { key: 'week', label: '七天', days: 7 },
-        { key: 'month', label: '一个月', days: 30 }
-    ];
-    let currentRange = 'today';
-    // API 返回的近 30 天明细缓存：Tab 切换只在前端切片重渲染，不重新请求。
-    let usageDays = [];
-    // 近一次 /api/usage 的告警字段：Tab 切换重渲染时透传，避免告警信息丢失。
-    let usageAlert = null;
-
-    // 区间聚合的 token 求和字段（日级与 byModel 级共用）。
-    const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'];
-
-    // 区间聚合：切片逐字段求和生成聚合 day，byModel 跨天合并（逐字段相加），
-    // hitRate 按合计 token 重算，费用任一参与日不可估则整区间 null。
-    function aggregateDays(days, label) {
-        const agg = {
-            date: label,
-            requests: 0, inputTokens: 0, outputTokens: 0,
-            cacheReadTokens: 0, cacheCreationTokens: 0,
-            totalTokens: 0, hitRate: null, cost: null, byModel: {}
-        };
-        let costKnown = days.length > 0;
-        let costSum = 0;
-        for (const day of days) {
-            agg.requests += day.requests || 0;
-            for (const field of TOKEN_FIELDS) {
-                agg[field] += day[field] || 0;
-            }
-            if (day.cost === null || day.cost === undefined) costKnown = false;
-            else costSum += day.cost;
-            for (const [model, entry] of Object.entries(day.byModel || {})) {
-                const merged = agg.byModel[model] || (agg.byModel[model] = {
-                    requests: 0, inputTokens: 0, outputTokens: 0,
-                    cacheReadTokens: 0, cacheCreationTokens: 0
-                });
-                merged.requests += entry.requests || 0;
-                for (const field of TOKEN_FIELDS) {
-                    merged[field] += entry[field] || 0;
-                }
-            }
-        }
-        agg.totalTokens = agg.inputTokens + agg.outputTokens
-            + agg.cacheReadTokens + agg.cacheCreationTokens;
-        const hitBase = agg.cacheReadTokens + agg.inputTokens + agg.cacheCreationTokens;
-        agg.hitRate = hitBase > 0 ? agg.cacheReadTokens / hitBase : null;
-        agg.cost = costKnown ? costSum : null;
-        return agg;
-    }
-
-    function renderUsageTabs(board) {
-        const tabs = document.createElement('div');
-        tabs.className = 'usage-tabs';
-        for (const range of RANGES) {
-            const tab = document.createElement('button');
-            tab.type = 'button';
-            tab.className = 'usage-tab' + (range.key === currentRange ? ' active' : '');
-            tab.textContent = range.label;
-            tab.addEventListener('click', () => {
-                if (currentRange === range.key) return;
-                currentRange = range.key;
-                renderUsageBoard({ days: usageDays, alert: usageAlert });
-            });
-            tabs.appendChild(tab);
-        }
-        board.appendChild(tabs);
-    }
-
-    // 柱状图：totalTokens 归一化高度，今日超阈值红色柱（红柱仅今日，与 Tab 无关）。
-    function renderUsageBars(board, rangeDays, today, exceeded) {
-        const maxTokens = Math.max(...rangeDays.map((day) => day.totalTokens || 0), 0);
-        const bars = document.createElement('div');
-        bars.className = 'usage-bars';
-        for (const day of rangeDays) {
-            const col = document.createElement('div');
-            col.className = 'usage-bar';
-            const fill = document.createElement('div');
-            fill.className = 'usage-bar-fill' + (exceeded && day === today ? ' alert' : '');
-            const ratio = maxTokens > 0 ? (day.totalTokens || 0) / maxTokens : 0;
-            fill.style.height = Math.round(ratio * 100) + '%';
-            const label = document.createElement('span');
-            label.className = 'usage-bar-label';
-            label.textContent = formatDayLabel(day.date);
-            col.appendChild(fill);
-            col.appendChild(label);
-            bars.appendChild(col);
-        }
-        board.appendChild(bars);
-    }
-
-    // 汇总行：区间总量 / 命中率 / 费用（null 显示空）/ 超阈值红点（仍只看今日）。
-    function renderUsageSummary(board, active, rangeLabel, exceeded) {
-        const summary = document.createElement('p');
-        summary.className = 'usage-summary';
-        if (exceeded) {
-            const dot = document.createElement('span');
-            dot.className = 'alert-dot';
-            dot.setAttribute('aria-label', '今日用量已超阈值');
-            dot.textContent = ' ';
-            summary.appendChild(dot);
-            summary.appendChild(document.createTextNode('今日用量已超阈值 · '));
-        }
-        const activeCost = formatCost(active.cost);
-        summary.appendChild(document.createTextNode(
-            rangeLabel + ' ' + formatTokens(active.totalTokens) + ' tokens · 命中率 '
-                + formatHitRate(active.hitRate)
-                + (activeCost ? ' · 费用 ' + activeCost : '')
-        ));
-        board.appendChild(summary);
-    }
-
-    // 按模型表：今日/区间聚合各模型用量；模型名经 textContent 渲染防注入。
-    function renderUsageModels(board, active) {
-        const models = Object.keys(active.byModel || {});
-        if (models.length === 0) return;
-        const table = document.createElement('table');
-        table.className = 'usage-table';
-        const head = document.createElement('tr');
-        for (const cell of ['模型', '请求', '输入', '输出', '缓存读', '缓存写']) {
-            const th = document.createElement('th');
-            th.textContent = cell;
-            head.appendChild(th);
-        }
-        table.appendChild(head);
-        for (const model of models) {
-            const entry = active.byModel[model] || {};
-            const row = document.createElement('tr');
-            for (const cell of [
-                model,
-                String(entry.requests ?? 0),
-                formatTokens(entry.inputTokens ?? 0),
-                formatTokens(entry.outputTokens ?? 0),
-                formatTokens(entry.cacheReadTokens ?? 0),
-                formatTokens(entry.cacheCreationTokens ?? 0)
-            ]) {
-                const td = document.createElement('td');
-                td.textContent = cell;
-                row.appendChild(td);
-            }
-            table.appendChild(row);
-        }
-        board.appendChild(table);
-    }
-
-    function renderUsageBoard(data) {
-        const board = document.getElementById('usageBoard');
-        board.textContent = '';
-        const days = Array.isArray(data?.days) ? data.days : [];
-        usageDays = days;
-        usageAlert = data?.alert || null;
-        renderUsageTabs(board);
-        if (days.length === 0) {
-            const empty = document.createElement('p');
-            empty.className = 'usage-empty';
-            empty.textContent = '暂无用量数据';
-            board.appendChild(empty);
-            return;
-        }
-        const range = RANGES.find((r) => r.key === currentRange) || RANGES[0];
-        const rangeDays = days.slice(0, range.days);
-        const exceeded = data?.alert?.exceeded === true;
-        const today = days[0];
-        // 汇总行与按模型表的数据源：今日=单日；七天/一个月=区间聚合。
-        const active = range.days === 1 ? today : aggregateDays(rangeDays, range.label);
-        renderUsageBars(board, rangeDays, today, exceeded);
-        renderUsageSummary(board, active, range.days === 1 ? '今日' : range.label, exceeded);
-        renderUsageModels(board, active);
-    }
-
-    async function loadUsageBoard() {
-        try {
-            const response = await fetch('/api/usage', { headers });
-            if (!response.ok) throw new Error('usage http ' + response.status);
-            const { data } = await response.json();
-            renderUsageBoard(data);
-        } catch {
-            const board = document.getElementById('usageBoard');
-            board.textContent = '';
-            const empty = document.createElement('p');
-            empty.className = 'usage-empty';
-            empty.textContent = '用量数据不可用';
-            board.appendChild(empty);
-        }
-    }
+` + USAGE_BOARD_SCRIPT + `
 
     async function initialize() {
         await bootstrap();

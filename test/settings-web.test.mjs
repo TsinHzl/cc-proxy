@@ -65,6 +65,11 @@ test('page: contains usage board nodes', () => {
     assert.match(html, /usage-table/);
     assert.match(html, /alert-dot/);
     assert.match(html, /\/api\/usage/);
+    assert.match(html, /usage-export-btn/);
+    assert.match(html, /api\/usage\/export/);
+    assert.match(html, /--warn/);
+    assert.match(html, /usage-bar-fill\.warn/);
+    assert.match(html, /alert-dot\.warn/);
 });
 
 test('page: contains no external resources or extra settings', () => {
@@ -106,6 +111,11 @@ function createPageElement({ disabled = false } = {}) {
         disabled,
         value: '',
         textContent: '',
+        // 导出按钮模拟：click() 仅打标，供断言下载链路触发。
+        clicked: false,
+        click() {
+            this.clicked = true;
+        },
         // select 元素模拟：appendChild 收集子 option，供 syncTemplateSelect 遍历比对。
         options: [],
         appendChild(child) {
@@ -190,6 +200,10 @@ function createPageHarness(fetchHandler) {
         usageBoard: createPageElement()
     };
     const calls = [];
+    // 导出下载链路：记录 createElement 产物与 blob URL 生命周期。
+    const created = [];
+    const objectUrls = [];
+    const revokedUrls = [];
     class TestWritableStream {}
     const stores = new Map();
     const sessionStorage = {
@@ -201,9 +215,23 @@ function createPageHarness(fetchHandler) {
     const vmContext = {
         document: {
             getElementById: (id) => elements[id],
-            createElement: () => createPageElement(),
+            createElement: () => {
+                const el = createPageElement();
+                created.push(el);
+                return el;
+            },
             createTextNode: (text) => ({ textContent: text, nodeType: 3 })
         },
+        URL: {
+            createObjectURL(blob) {
+                const url = 'blob:mock-' + objectUrls.length;
+                objectUrls.push({ blob, url });
+                return url;
+            },
+            revokeObjectURL: (url) => revokedUrls.push(url)
+        },
+        // 导出下载链路的 revoke 推迟到宏任务，沙箱需显式注入宿主定时器。
+        setTimeout,
         fetch: async (url, options = {}) => {
             const call = { url, options };
             calls.push(call);
@@ -223,6 +251,9 @@ function createPageHarness(fetchHandler) {
         calls,
         elements,
         sessionStorage,
+        created,
+        objectUrls,
+        revokedUrls,
         get reloadCount() {
             return reloadCount;
         },
@@ -3048,7 +3079,7 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
     assert.equal(summary.options[0].className, 'alert-dot');
     assert.match(
         String(summary.options[1].textContent),
-        /今日用量已超阈值/
+        /今日用量已超限/
     );
     assert.match(
         String(summary.options[2].textContent),
@@ -3084,6 +3115,194 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
     assert.equal(monthBars.options.length, 2);
     const monthSummary = board.options.filter((el) => el.className === 'usage-summary').pop();
     assert.match(String(monthSummary.options[2].textContent), /一个月 900 tokens/);
+
+    // 导出按钮行：两个入口恒在渲染（与 Tab/数据无关）。
+    const exportRow = board.options.filter((el) => el.className === 'usage-export').pop();
+    assert.ok(exportRow);
+    assert.deepEqual(exportRow.options.map((btn) => btn.textContent), ['导出 CSV', '导出 JSON']);
+});
+
+test('page script: usage alert warn level renders yellow bar, dot and ratio', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    days: [
+                        {
+                            date: '2026-10-15', requests: 1, totalTokens: 820,
+                            inputTokens: 820, outputTokens: 0,
+                            cacheReadTokens: 0, cacheCreationTokens: 0,
+                            hitRate: null, cost: null, byModel: {}
+                        }
+                    ],
+                    alert: { dailyTokens: 1000, dailyCost: 0, level: 'warn', exceeded: false, ratio: 0.82 }
+                }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.usageBoard;
+    // 今日柱：warn 级黄柱（含 warn 不含 alert）。
+    const bars = board.options.find((el) => el.className === 'usage-bars');
+    const todayFill = bars.options[0].options[0];
+    assert.ok(todayFill.className.includes('warn'));
+    assert.ok(!todayFill.className.includes('alert'));
+    // 汇总行：黄点（warn 类）+ 预警文案 + 已用 82%。
+    const summary = board.options.find((el) => el.className === 'usage-summary');
+    const dot = summary.options[0];
+    assert.equal(dot.className, 'alert-dot warn');
+    assert.equal(dot.attributes['aria-label'], '今日用量预警');
+    assert.match(String(summary.options[1].textContent), /今日用量预警 · 已用 82% · /);
+    // 导出按钮行恒在。
+    assert.ok(board.options.find((el) => el.className === 'usage-export'));
+});
+
+test('page script: export buttons fetch with token and trigger download', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url.startsWith('/api/usage/export')) {
+            return {
+                ok: true,
+                blob: async () => 'BLOB',
+                json: async () => { throw new Error('no json'); }
+            };
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.usageBoard;
+    // 空数据也渲染导出行（导出近 30 天不依赖当日有数据）。
+    const exportRow = board.options.find((el) => el.className === 'usage-export');
+    assert.ok(exportRow);
+    assert.deepEqual(exportRow.options.map((btn) => btn.textContent), ['导出 CSV', '导出 JSON']);
+
+    // 点击 CSV：带 token 请求导出接口 → blob URL → <a download> 点击 → 立即 revoke。
+    await exportRow.options[0].dispatch('click');
+    await flushPageMicrotasks();
+    const exportCall = page.calls.find((call) => call.url.startsWith('/api/usage/export'));
+    assert.ok(exportCall);
+    assert.equal(exportCall.url, '/api/usage/export?format=csv');
+    assert.equal(exportCall.options.headers['X-CC-Proxy-Token'], 'vm-token');
+    assert.equal(page.objectUrls.length, 1);
+    assert.equal(page.objectUrls[0].blob, 'BLOB');
+    const link = page.created.find((el) => el.download === 'cc-proxy-usage.csv');
+    assert.ok(link);
+    assert.equal(link.clicked, true);
+    // revoke 推迟到宏任务：flush 微任务后尚未执行，轮转宏任务队列后才释放。
+    assert.deepEqual(page.revokedUrls, []);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(page.revokedUrls, [page.objectUrls[0].url]);
+
+    // 点击 JSON：同链路，文件名随格式变化。
+    await exportRow.options[1].dispatch('click');
+    await flushPageMicrotasks();
+    const jsonCall = page.calls.filter((call) => call.url.startsWith('/api/usage/export')).pop();
+    assert.equal(jsonCall.url, '/api/usage/export?format=json');
+    assert.ok(page.created.find((el) => el.download === 'cc-proxy-usage.json'));
+
+    // 失败分支：接口非 2xx → 状态条报错且不创建 blob URL。
+    const failing = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url.startsWith('/api/usage/export')) return pageJsonResponse(500, { ok: false });
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+    const failingRow = failing.elements.usageBoard.options.find((el) => el.className === 'usage-export');
+    await failingRow.options[0].dispatch('click');
+    await flushPageMicrotasks();
+    assert.equal(failing.elements.status.textContent, '用量导出失败');
+    assert.ok(failing.elements.status.classList.contains('error'));
+    assert.equal(failing.objectUrls.length, 0);
+
+    // blob() 抛错分支：同样走 catch 报错且不创建 blob URL。
+    const blobThrowing = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url.startsWith('/api/usage/export')) {
+            return { ok: true, blob: async () => { throw new Error('boom'); } };
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+    const throwingRow = blobThrowing.elements.usageBoard.options.find((el) => el.className === 'usage-export');
+    await throwingRow.options[0].dispatch('click');
+    await flushPageMicrotasks();
+    assert.equal(blobThrowing.elements.status.textContent, '用量导出失败');
+    assert.equal(blobThrowing.objectUrls.length, 0);
 });
 
 test('API: /api/usage rejects invalid token and non-GET', async (t) => {
