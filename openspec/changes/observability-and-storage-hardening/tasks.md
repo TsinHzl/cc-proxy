@@ -14,7 +14,7 @@
 - [x] T5 新增 `GET /api/upstream-health`（settings-web 读落盘快照文件，缺失/损坏返回空快照）+ 设置页"上游状态"卡片（活跃上游、各上游成功率/TTFT/次数、最近切换）；渲染函数遵守 ≤800 行——验证：API 测试（含空快照分支）+ 页面节点断言
 
 ### F3 存储优化（node:sqlite + JSON 回退）
-- [ ] T6 新增 `src/usage-store.js` 抽象层：`createUsageStore({file, sqliteModule?})` 动态 import('node:sqlite') 特性探测（不依赖版本号，可注入），成功用 SQLite（`PRAGMA journal_mode=WAL`+`busy_timeout=5000`，含按天/按小时聚合表）、失败回退 JSON——验证：注入桩强制两模式对照测试（同一 record 输入 → readRecentDays/summary 结构一致）
+- [x] T6 新增 `src/usage-store.js` 抽象层：`createUsageStore({file, sqliteModule?})` 动态 import('node:sqlite') 特性探测（不依赖版本号，可注入），成功用 SQLite（`PRAGMA journal_mode=WAL`+`busy_timeout=5000`，含按天/按小时聚合表）、失败回退 JSON——验证：注入桩强制两模式对照测试（同一 record 输入 → readRecentDays/summary 结构一致）
 - [ ] T7 历史导入与接入：启动时（早于请求转发）SQLite 为空且 usage.json 存在 → 单事务逐日 INSERT → 成功 rename `.imported`；失败回滚、保留原文件、本次运行强制 JSON 模式；usage.js 与 settings-web.js 读写路径接入 store 抽象层，两模式下 /api/usage、看板行为一致，页面标注当前存储模式——验证：导入成功/失败注入测试 + 两模式行为对比测试
 
 ### F4 请求级 debug 视图
