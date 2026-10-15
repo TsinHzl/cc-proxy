@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readConfig, writeConfig } from '../src/settings.js';
 import { defaultUsagePath, readRecentDays } from '../src/usage.js';
-import { estimateCost, cacheHitRate } from '../src/pricing.js';
+import { estimateCost, cacheHitRate, computeUsageAlert } from '../src/pricing.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import {
     SESSION_TIMING,
@@ -410,12 +410,20 @@ function buildUsageReport(envDir, read) {
         };
     });
     const threshold = config.alerts.dailyTokens;
-    const today = days[0];
+    const today = days[0] ?? { totalTokens: 0, cost: null };
+    const dailyCost = config.alerts.dailyCost ?? 0;
     return {
         days,
         alert: {
             dailyTokens: threshold,
-            exceeded: threshold > 0 && today.totalTokens > threshold
+            dailyCost,
+            ...computeUsageAlert({
+                dailyTokens: threshold,
+                dailyCost,
+                todayTokens: today.totalTokens,
+                todayCost: today.cost,
+                thresholds: config.usageAlert
+            })
         }
     };
 }

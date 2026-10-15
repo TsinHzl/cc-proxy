@@ -1207,7 +1207,8 @@ test(
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
-                alerts: { dailyTokens: 0 },
+                alerts: { dailyTokens: 0, dailyCost: 0 },
+                usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
                 models: {},
                 upstreams: []
             }
@@ -2840,7 +2841,7 @@ test('API: GET /api/usage returns 30-day usage report', async (t) => {
     assert.equal(empty.cost, null);
 
     // 告警未配置（0）：不判超限。
-    assert.deepEqual(data.alert, { dailyTokens: 0, exceeded: false });
+    assert.deepEqual(data.alert, { dailyTokens: 0, dailyCost: 0, level: 'none', exceeded: false, ratio: 0 });
 });
 
 test('API: /api/usage alert exceeded when threshold configured', async (t) => {
@@ -2873,7 +2874,7 @@ test('API: /api/usage alert exceeded when threshold configured', async (t) => {
 
     const res = await fetch(`${api.origin}/api/usage`, { headers: authHeaders(api) });
     const { data } = await res.json();
-    assert.deepEqual(data.alert, { dailyTokens: 100, exceeded: true });
+    assert.deepEqual(data.alert, { dailyTokens: 100, dailyCost: 0, level: 'limit', exceeded: true, ratio: 5 });
 });
 
 test('API: GET /api/usage/export supports csv and json, rejects unknown format', async (t) => {

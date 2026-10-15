@@ -60,3 +60,30 @@ export function cacheHitRate(day) {
     if (denom === 0) return null;
     return (day.cacheReadTokens ?? 0) / denom;
 }
+
+// 分级用量告警：比值 = max(今日 tokens / dailyTokens, 今日费用 / dailyCost)，
+// 仅计算已配置的预算项（> 0），均未配置时 level 恒为 'none'。
+// thresholds: { warnThreshold, limitThreshold }（来自 config.usageAlert，已归一化）。
+// 返回 { level: 'none'|'warn'|'limit', exceeded: level==='limit', ratio }；
+// ratio 为已配置项中的最大比值（无预算配置时为 0）。
+export function computeUsageAlert({
+    dailyTokens,
+    dailyCost,
+    todayTokens,
+    todayCost,
+    thresholds
+}) {
+    const warn = thresholds?.warnThreshold ?? 0.8;
+    const limit = thresholds?.limitThreshold ?? 1.0;
+    let ratio = 0;
+    if (dailyTokens > 0 && Number.isFinite(todayTokens)) {
+        ratio = Math.max(ratio, todayTokens / dailyTokens);
+    }
+    if (dailyCost > 0 && todayCost !== null && Number.isFinite(todayCost)) {
+        ratio = Math.max(ratio, todayCost / dailyCost);
+    }
+    let level = 'none';
+    if (ratio >= limit) level = 'limit';
+    else if (ratio >= warn) level = 'warn';
+    return { level, exceeded: level === 'limit', ratio };
+}

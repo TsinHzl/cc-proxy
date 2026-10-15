@@ -19,8 +19,11 @@ export const DEFAULT_CONFIG = Object.freeze({
     // 替换为配置文本。默认关闭；prompt 为空时覆写按 no-op 处理。
     systemPromptOverride: { enabled: false, prompt: '' },
     // 用量告警阈值：当日 tokens 超过 dailyTokens 时 CLI 启动提示 + 设置页红点。
-    // 0 表示未配置（不告警）。
-    alerts: { dailyTokens: 0 },
+    // 0 表示未配置（不告警）。dailyCost 为费用预算（美元，> 0 有效，0 = 未配置）。
+    alerts: { dailyTokens: 0, dailyCost: 0 },
+    // 分级告警阈值（比值语义）：warnThreshold（预警，默认 0.8）/ limitThreshold
+    // （超限，默认 1.0）。校验 0 < warn < limit ≤ 1，非法整体回退默认。
+    usageAlert: { warnThreshold: 0.8, limitThreshold: 1.0 },
     // 模型定价覆盖（每百万 token 美元）：models.<model>.pricing =
     // { input, output, cacheRead, cacheCreation }，未收录模型不显示费用。
     models: {},
@@ -52,6 +55,7 @@ function normalizeConfig(raw) {
         effortOverride: { ...DEFAULT_CONFIG.effortOverride },
         systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride },
         alerts: { ...DEFAULT_CONFIG.alerts },
+        usageAlert: { ...DEFAULT_CONFIG.usageAlert },
         models: {},
         upstreams: []
     };
@@ -89,6 +93,21 @@ function normalizeConfig(raw) {
         if (Number.isSafeInteger(alerts.dailyTokens) && alerts.dailyTokens >= 0
             && alerts.dailyTokens <= 1e12) {
             config.alerts.dailyTokens = alerts.dailyTokens;
+        }
+        // 费用预算：正有限数接受，其余（含 0/负数/非数值）回退 0（未配置）。
+        if (typeof alerts.dailyCost === 'number' && Number.isFinite(alerts.dailyCost)
+            && alerts.dailyCost > 0) {
+            config.alerts.dailyCost = alerts.dailyCost;
+        }
+    }
+    const usageAlert = raw.usageAlert;
+    if (usageAlert && typeof usageAlert === 'object' && !Array.isArray(usageAlert)) {
+        // 比值语义：0 < warn < limit ≤ 1，任一非法或关系不满足则整体回退默认。
+        const warn = usageAlert.warnThreshold;
+        const limit = usageAlert.limitThreshold;
+        if (Number.isFinite(warn) && Number.isFinite(limit)
+            && warn > 0 && limit > 0 && warn < limit && limit <= 1) {
+            config.usageAlert = { warnThreshold: warn, limitThreshold: limit };
         }
     }
     const models = raw.models;
@@ -179,6 +198,11 @@ export function writeConfig(partial, envDir) {
             partial?.alerts && typeof partial.alerts === 'object' && !Array.isArray(partial.alerts)
                 ? { ...current.alerts, ...partial.alerts }
                 : current.alerts,
+        usageAlert:
+            partial?.usageAlert && typeof partial.usageAlert === 'object'
+                && !Array.isArray(partial.usageAlert)
+                ? { ...current.usageAlert, ...partial.usageAlert }
+                : current.usageAlert,
         models:
             partial?.models && typeof partial.models === 'object' && !Array.isArray(partial.models)
                 ? { ...current.models, ...partial.models }
