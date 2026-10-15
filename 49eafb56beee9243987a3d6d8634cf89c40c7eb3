@@ -1,0 +1,33 @@
+bin/claude-proxy.js
+  727a034631d893bc 12,52,58-59,77-82
+bin/settings-web.js
+  727a034631d893bc 6,385-389,391-394,424,493,525,743-745,760
+src/usage-store.js
+  727a034631d893bc 9,89-94,230-342,346,361-364,368
+bin/settings-page-usage.js
+  727a034631d893bc 227-236,246
+test/usage-store.test.mjs
+  727a034631d893bc 8,204-318
+bin/settings-page.js
+  727a034631d893bc 105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "49eafb56beee9243987a3d6d8634cf89c40c7eb3",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 306,
+      "total_deletions": 39,
+      "accepted_lines": 282,
+      "overriden_lines": 0
+    }
+  }
+}
