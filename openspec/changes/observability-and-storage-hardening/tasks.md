@@ -5,8 +5,8 @@
 ## 任务
 
 ### F1 用量导出与分级告警
-- [ ] T1 新增 `GET /api/usage/export?format=csv|json`（30 天聚合，CSV 含 date/requests/各 token 字段/费用；JSON 复用 buildUsageReport；未知 format 返回 400）——验证：node:test 覆盖两种 format 的响应头、内容与 400 分支
-- [ ] T2 告警分级：config.json 支持 `usageAlert.warnThreshold`(默认0.8)/`limitThreshold`(默认1.0)；比值基准 = max(今日 tokens/alerts.dailyTokens, 今日估算费用/alerts.dailyCost)，仅计已配置项，均未配置 level=none；告警计算返回 `{level:'none'|'warn'|'limit', ratio}`，/api/usage 的 alert 字段升级（保留 exceeded=level==='limit' 兼容）——验证：阈值边界测试（79%/80%/99%/100%）+ 无预算配置 + 非法阈值回退
+- [x] T1 新增 `GET /api/usage/export?format=csv|json`（30 天聚合，CSV 含 date/requests/各 token 字段/费用；JSON 复用 buildUsageReport；未知 format 返回 400）——验证：node:test 覆盖两种 format 的响应头、内容与 400 分支
+- [x] T2 告警分级：config.json 支持 `usageAlert.warnThreshold`(默认0.8)/`limitThreshold`(默认1.0)；比值基准 = max(今日 tokens/alerts.dailyTokens, 今日估算费用/alerts.dailyCost)，仅计已配置项，均未配置 level=none；告警计算返回 `{level:'none'|'warn'|'limit', ratio}`，/api/usage 的 alert 字段升级（保留 exceeded=level==='limit' 兼容）——验证：阈值边界测试（79%/80%/99%/100%）+ 无预算配置 + 非法阈值回退
 - [ ] T3 设置页看板接入两级告警展示（黄色预警条 + 红色超限，含 ratio）与导出按钮（下载 CSV/JSON）；渲染函数遵守文件 ≤800 行约束——验证：设置页测试断言新节点与文本
 
 ### F2 上游健康面板（被动统计）
