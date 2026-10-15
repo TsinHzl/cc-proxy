@@ -155,6 +155,7 @@ const PAGE_BODY = `
             <div class="controls">
                 <select id="systemPromptTemplate" aria-label="系统提示词角色" disabled>
                     <option value="">选择角色…</option>
+                    <option value="__CC_OFFICIAL__">CC官方</option>
                 </select>
                 <label class="switch" for="systemPromptOverrideEnabled">
                     <input id="systemPromptOverrideEnabled" type="checkbox" disabled>
@@ -571,6 +572,22 @@ const PAGE_SCRIPT = `
     }
     templateSelect.addEventListener('change', (event) => {
         const select = event.currentTarget;
+        if (select.value === '__CC_OFFICIAL__') {
+            // 选中 CC官方：填入代理捕获的 CC 默认系统提示词（无捕获则清空），
+            // 随后由 blur 提交链路统一保存。走 prefilling 互斥并在回调内
+            // 快照比对，避免拉取期间覆盖用户已输入内容。
+            prefilling = true;
+            const before = document.getElementById('systemPromptOverridePrompt').value;
+            fetchCapturedPrompt().then((prompt) => {
+                const textarea = document.getElementById('systemPromptOverridePrompt');
+                if (textarea.value !== before) return;
+                textarea.value = prompt ?? '';
+                syncTemplateSelect();
+            }).finally(() => {
+                prefilling = false;
+            });
+            return;
+        }
         if (select.value) {
             document.getElementById('systemPromptOverridePrompt').value = select.value;
         }
