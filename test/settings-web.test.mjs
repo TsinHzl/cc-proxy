@@ -57,7 +57,7 @@ test('page: explains suggestion forwarding and thinking text behavior', () => {
 test('page: contains usage board nodes', () => {
     const html = renderSettingsPage();
 
-    assert.match(html, /用量看板（近 7 天）/);
+    assert.match(html, /用量看板（近 30 天）/);
     assert.match(html, /id="usageBoard"/);
     assert.match(html, /id="usagePlaceholder"/);
     assert.match(html, /usage-bars/);
@@ -2767,7 +2767,7 @@ test('service: cleanup timeout prevents pending lifecycle hang', async () => {
     assert.equal(harness.closeCalls, 1);
 });
 
-test('API: GET /api/usage returns 7-day usage report', async (t) => {
+test('API: GET /api/usage returns 30-day usage report', async (t) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-usage-api-'));
     t.after(() => fs.rmSync(home, { recursive: true, force: true }));
     const usageFile = path.join(home, '.cc-proxy', 'usage.json');
@@ -2815,7 +2815,7 @@ test('API: GET /api/usage returns 7-day usage report', async (t) => {
     assert.equal(res.status, 200);
     const { ok, data } = await res.json();
     assert.equal(ok, true);
-    assert.equal(data.days.length, 7);
+    assert.equal(data.days.length, 30);
     const today = data.days[0];
     assert.equal(today.date, dayKey(0));
     assert.equal(today.requests, 2);
@@ -2888,12 +2888,16 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
                     days: [
                         {
                             date: '2026-10-15', requests: 2, totalTokens: 500,
+                            inputTokens: 200, outputTokens: 250,
+                            cacheReadTokens: 200, cacheCreationTokens: 50,
                             hitRate: 0.5, cost: 1.25,
                             byModel: { 'claude-sonnet-5': { requests: 2 } }
                         },
                         {
                             date: '2026-10-14', requests: 1, totalTokens: 200,
-                            hitRate: null, cost: null, byModel: {}
+                            inputTokens: 100, outputTokens: 100,
+                            cacheReadTokens: 0, cacheCreationTokens: 0,
+                            hitRate: null, cost: 0.75, byModel: {}
                         }
                     ],
                     alert: { dailyTokens: 1000, exceeded: true }
@@ -2916,17 +2920,21 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
     await flushPageMicrotasks();
 
     const board = page.elements.usageBoard;
-    // 柱状图：2 根柱，今日超阈值红柱 + 明日正常柱（append 收集于 options）。
+    // Tab 条：三个 Tab，今日默认高亮。
+    const tabs = board.options.find((el) => el.className === 'usage-tabs');
+    assert.ok(tabs);
+    assert.equal(tabs.options.length, 3);
+    assert.deepEqual(tabs.options.map((t) => t.textContent), ['今日', '七天', '一个月']);
+    assert.equal(tabs.options[0].className, 'usage-tab active');
+    assert.equal(tabs.options[1].className, 'usage-tab');
+    // 柱状图：今日 Tab 下 1 根柱，超阈值红柱。
     const bars = board.options.find((el) => el.className === 'usage-bars');
     assert.ok(bars);
-    assert.equal(bars.options.length, 2);
+    assert.equal(bars.options.length, 1);
     const todayBar = bars.options[0];
     const todayFill = todayBar.options[0];
     assert.ok(todayFill.className.includes('alert'));
     assert.equal(todayFill.style.height, '100%');
-    const yesterdayFill = bars.options[1].options[0];
-    assert.equal(yesterdayFill.className, 'usage-bar-fill');
-    assert.equal(yesterdayFill.style.height, '40%');
     assert.equal(todayBar.options[1].textContent, '10-15');
 
     // 汇总行：红点 + 今日 tokens/命中率/费用文本。
@@ -2950,6 +2958,27 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
         ['模型', '请求', '输入', '输出', '缓存读', '缓存写']
     );
     assert.equal(table.options[1].options[0].textContent, 'claude-sonnet-5');
+
+    // 切到七天 Tab：2 根柱 + 区间聚合汇总（cost 逐日可估时求和 1.25+0.75=2.00）。
+    // 注：harness 的 options 不随 textContent='' 清空，重渲染后取最后一次追加的同名节点。
+    await tabs.options[1].dispatch('click');
+    await flushPageMicrotasks();
+    const weekBars = board.options.filter((el) => el.className === 'usage-bars').pop();
+    assert.equal(weekBars.options.length, 2);
+    const weekSummary = board.options.filter((el) => el.className === 'usage-summary').pop();
+    assert.ok(weekSummary);
+    assert.match(
+        String(weekSummary.options[2].textContent),
+        /七天 900 tokens · 命中率 36\.4% · 费用 \$2\.00/
+    );
+
+    // 切到一个月 Tab：柱数按实际天数（此处 2 天），聚合口径与七天一致。
+    await tabs.options[2].dispatch('click');
+    await flushPageMicrotasks();
+    const monthBars = board.options.filter((el) => el.className === 'usage-bars').pop();
+    assert.equal(monthBars.options.length, 2);
+    const monthSummary = board.options.filter((el) => el.className === 'usage-summary').pop();
+    assert.match(String(monthSummary.options[2].textContent), /一个月 900 tokens/);
 });
 
 test('API: /api/usage rejects invalid token and non-GET', async (t) => {

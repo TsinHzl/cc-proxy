@@ -91,6 +91,9 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-table th, .usage-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .usage-table th { color: var(--muted); font-weight: normal; }
 .usage-empty { margin: 8px 4px 0; color: var(--muted); font-size: 12px; }
+.usage-tabs { display: flex; gap: 6px; margin: 0 4px 8px; }
+.usage-tab { padding: 3px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
+.usage-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 @media (max-width: 640px) {
     main { width: min(100% - 24px, 1120px); padding: 12px 0; }
     header { display: block; }
@@ -167,7 +170,7 @@ const PAGE_BODY = `
             <textarea id="systemPromptOverridePrompt" aria-label="自定义系统提示词" disabled spellcheck="false"></textarea>
         </div>
     </section>
-    <p class="section-title">用量看板（近 7 天）</p>
+    <p class="section-title">用量看板（近 30 天）</p>
     <section class="card usage-card" aria-label="用量看板">
         <div id="usageBoard" aria-live="polite">
             <p id="usagePlaceholder" class="usage-empty">用量数据加载中…</p>
@@ -650,25 +653,82 @@ const PAGE_SCRIPT = `
         return parts.length === 3 ? parts[1] + '-' + parts[2] : String(date ?? '');
     }
 
-    function renderUsageBoard(data) {
-        const board = document.getElementById('usageBoard');
-        board.textContent = '';
-        const days = Array.isArray(data?.days) ? data.days : [];
-        if (days.length === 0) {
-            const empty = document.createElement('p');
-            empty.className = 'usage-empty';
-            empty.textContent = '暂无用量数据';
-            board.appendChild(empty);
-            return;
-        }
-        const maxTokens = Math.max(...days.map((day) => day.totalTokens || 0), 0);
-        const exceeded = data?.alert?.exceeded === true;
-        const today = days[0];
+    // 用量看板三种时间维度：今日 / 七天 / 一个月（30 天），Tab 点击切换。
+    const RANGES = [
+        { key: 'today', label: '今日', days: 1 },
+        { key: 'week', label: '七天', days: 7 },
+        { key: 'month', label: '一个月', days: 30 }
+    ];
+    let currentRange = 'today';
+    // API 返回的近 30 天明细缓存：Tab 切换只在前端切片重渲染，不重新请求。
+    let usageDays = [];
+    // 近一次 /api/usage 的告警字段：Tab 切换重渲染时透传，避免告警信息丢失。
+    let usageAlert = null;
 
-        // 柱状图：totalTokens 归一化高度，今日超阈值红色柱。
+    // 区间聚合的 token 求和字段（日级与 byModel 级共用）。
+    const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'];
+
+    // 区间聚合：切片逐字段求和生成聚合 day，byModel 跨天合并（逐字段相加），
+    // hitRate 按合计 token 重算，费用任一参与日不可估则整区间 null。
+    function aggregateDays(days, label) {
+        const agg = {
+            date: label,
+            requests: 0, inputTokens: 0, outputTokens: 0,
+            cacheReadTokens: 0, cacheCreationTokens: 0,
+            totalTokens: 0, hitRate: null, cost: null, byModel: {}
+        };
+        let costKnown = days.length > 0;
+        let costSum = 0;
+        for (const day of days) {
+            agg.requests += day.requests || 0;
+            for (const field of TOKEN_FIELDS) {
+                agg[field] += day[field] || 0;
+            }
+            if (day.cost === null || day.cost === undefined) costKnown = false;
+            else costSum += day.cost;
+            for (const [model, entry] of Object.entries(day.byModel || {})) {
+                const merged = agg.byModel[model] || (agg.byModel[model] = {
+                    requests: 0, inputTokens: 0, outputTokens: 0,
+                    cacheReadTokens: 0, cacheCreationTokens: 0
+                });
+                merged.requests += entry.requests || 0;
+                for (const field of TOKEN_FIELDS) {
+                    merged[field] += entry[field] || 0;
+                }
+            }
+        }
+        agg.totalTokens = agg.inputTokens + agg.outputTokens
+            + agg.cacheReadTokens + agg.cacheCreationTokens;
+        const hitBase = agg.cacheReadTokens + agg.inputTokens + agg.cacheCreationTokens;
+        agg.hitRate = hitBase > 0 ? agg.cacheReadTokens / hitBase : null;
+        agg.cost = costKnown ? costSum : null;
+        return agg;
+    }
+
+    function renderUsageTabs(board) {
+        const tabs = document.createElement('div');
+        tabs.className = 'usage-tabs';
+        for (const range of RANGES) {
+            const tab = document.createElement('button');
+            tab.type = 'button';
+            tab.className = 'usage-tab' + (range.key === currentRange ? ' active' : '');
+            tab.textContent = range.label;
+            tab.addEventListener('click', () => {
+                if (currentRange === range.key) return;
+                currentRange = range.key;
+                renderUsageBoard({ days: usageDays, alert: usageAlert });
+            });
+            tabs.appendChild(tab);
+        }
+        board.appendChild(tabs);
+    }
+
+    // 柱状图：totalTokens 归一化高度，今日超阈值红色柱（红柱仅今日，与 Tab 无关）。
+    function renderUsageBars(board, rangeDays, today, exceeded) {
+        const maxTokens = Math.max(...rangeDays.map((day) => day.totalTokens || 0), 0);
         const bars = document.createElement('div');
         bars.className = 'usage-bars';
-        for (const day of days) {
+        for (const day of rangeDays) {
             const col = document.createElement('div');
             col.className = 'usage-bar';
             const fill = document.createElement('div');
@@ -683,8 +743,10 @@ const PAGE_SCRIPT = `
             bars.appendChild(col);
         }
         board.appendChild(bars);
+    }
 
-        // 今日汇总行：总量 / 命中率 / 费用（null 显示空）/ 超阈值红点。
+    // 汇总行：区间总量 / 命中率 / 费用（null 显示空）/ 超阈值红点（仍只看今日）。
+    function renderUsageSummary(board, active, rangeLabel, exceeded) {
         const summary = document.createElement('p');
         summary.className = 'usage-summary';
         if (exceeded) {
@@ -695,45 +757,71 @@ const PAGE_SCRIPT = `
             summary.appendChild(dot);
             summary.appendChild(document.createTextNode('今日用量已超阈值 · '));
         }
-        const todayCost = formatCost(today.cost);
+        const activeCost = formatCost(active.cost);
         summary.appendChild(document.createTextNode(
-            '今日 ' + formatTokens(today.totalTokens) + ' tokens · 命中率 '
-                + formatHitRate(today.hitRate)
-                + (todayCost ? ' · 费用 ' + todayCost : '')
+            rangeLabel + ' ' + formatTokens(active.totalTokens) + ' tokens · 命中率 '
+                + formatHitRate(active.hitRate)
+                + (activeCost ? ' · 费用 ' + activeCost : '')
         ));
         board.appendChild(summary);
+    }
 
-        // 按模型表：今日各模型用量；模型名经 textContent 渲染防注入。
-        const models = Object.keys(today.byModel || {});
-        if (models.length > 0) {
-            const table = document.createElement('table');
-            table.className = 'usage-table';
-            const head = document.createElement('tr');
-            for (const cell of ['模型', '请求', '输入', '输出', '缓存读', '缓存写']) {
-                const th = document.createElement('th');
-                th.textContent = cell;
-                head.appendChild(th);
-            }
-            table.appendChild(head);
-            for (const model of models) {
-                const entry = today.byModel[model] || {};
-                const row = document.createElement('tr');
-                for (const cell of [
-                    model,
-                    String(entry.requests ?? 0),
-                    formatTokens(entry.inputTokens ?? 0),
-                    formatTokens(entry.outputTokens ?? 0),
-                    formatTokens(entry.cacheReadTokens ?? 0),
-                    formatTokens(entry.cacheCreationTokens ?? 0)
-                ]) {
-                    const td = document.createElement('td');
-                    td.textContent = cell;
-                    row.appendChild(td);
-                }
-                table.appendChild(row);
-            }
-            board.appendChild(table);
+    // 按模型表：今日/区间聚合各模型用量；模型名经 textContent 渲染防注入。
+    function renderUsageModels(board, active) {
+        const models = Object.keys(active.byModel || {});
+        if (models.length === 0) return;
+        const table = document.createElement('table');
+        table.className = 'usage-table';
+        const head = document.createElement('tr');
+        for (const cell of ['模型', '请求', '输入', '输出', '缓存读', '缓存写']) {
+            const th = document.createElement('th');
+            th.textContent = cell;
+            head.appendChild(th);
         }
+        table.appendChild(head);
+        for (const model of models) {
+            const entry = active.byModel[model] || {};
+            const row = document.createElement('tr');
+            for (const cell of [
+                model,
+                String(entry.requests ?? 0),
+                formatTokens(entry.inputTokens ?? 0),
+                formatTokens(entry.outputTokens ?? 0),
+                formatTokens(entry.cacheReadTokens ?? 0),
+                formatTokens(entry.cacheCreationTokens ?? 0)
+            ]) {
+                const td = document.createElement('td');
+                td.textContent = cell;
+                row.appendChild(td);
+            }
+            table.appendChild(row);
+        }
+        board.appendChild(table);
+    }
+
+    function renderUsageBoard(data) {
+        const board = document.getElementById('usageBoard');
+        board.textContent = '';
+        const days = Array.isArray(data?.days) ? data.days : [];
+        usageDays = days;
+        usageAlert = data?.alert || null;
+        renderUsageTabs(board);
+        if (days.length === 0) {
+            const empty = document.createElement('p');
+            empty.className = 'usage-empty';
+            empty.textContent = '暂无用量数据';
+            board.appendChild(empty);
+            return;
+        }
+        const range = RANGES.find((r) => r.key === currentRange) || RANGES[0];
+        const rangeDays = days.slice(0, range.days);
+        const exceeded = data?.alert?.exceeded === true;
+        const today = days[0];
+        // 汇总行与按模型表的数据源：今日=单日；七天/一个月=区间聚合。
+        const active = range.days === 1 ? today : aggregateDays(rangeDays, range.label);
+        renderUsageBars(board, rangeDays, today, exceeded);
+        renderUsageSummary(board, active, range.days === 1 ? '今日' : range.label, exceeded);
+        renderUsageModels(board, active);
     }
 
     async function loadUsageBoard() {
