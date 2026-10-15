@@ -1,0 +1,31 @@
+bin/claude-proxy.js
+  727a034631d893bc 14,78-80,98,141-142
+test/upstream-health.test.mjs
+  727a034631d893bc 1-237
+src/upstream.js
+  727a034631d893bc 60,76
+src/proxy.js
+  727a034631d893bc 156,275-287,305-307,331,388-389,395-396,408-416
+src/upstream-health.js
+  727a034631d893bc 1-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "727be82024909eb5926920c1a2ead1c39048d679",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 461,
+      "total_deletions": 35,
+      "accepted_lines": 433,
+      "overriden_lines": 0
+    }
+  }
+}
