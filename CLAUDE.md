@@ -24,9 +24,14 @@ bin/claude-proxy.js   CLI 入口：--version / --setting / 起代理 → 注入 
         │
 src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处理
   ├─ src/upstream.js          上游地址解析（ANTHROPIC_BASE_URL 或官方 API）与转发
+  ├─ src/upstream-health.js   上游健康统计（滚动窗口成功率）→ ~/.cc-proxy/runtime/upstream-health.json
   ├─ src/thinking-text.js     thinking→text 流式改写（核心特性）
   ├─ src/suggestion-mode.js   [SUGGESTION MODE 请求识别与空响应拦截
   ├─ src/usage.js             token 用量提取 → ~/.cc-proxy/usage.json（按天）
+  ├─ src/usage-store.js       用量存储抽象层（JSON / SQLite 双模式探测 + 历史导入）
+  ├─ src/pricing.js           模型单价解析（config 覆盖内置价表，精确→前缀）
+  ├─ src/latency.js           会话级延迟统计（TTFT 采样，退出时汇总）
+  ├─ src/request-log.js       最近请求环形缓冲 200 条 → ~/.cc-proxy/runtime/recent-requests.json
   ├─ src/debug-log.js         CC_PROXY_DEBUG=1 请求级日志 → ~/.cc-proxy/logs/
   └─ src/logger.js            静默日志（见下方关键约束）
 bin/settings-web.js   cc-proxy --setting：本地 Web 设置页 + 受保护 API
@@ -44,6 +49,7 @@ src/settings.js       ~/.cc-proxy/config.json 读写（缺失/损坏回退默认
 - **代理内部日志默认静默**（`src/logger.js`）。任何 stdout/stderr 输出都会经 stdio 继承泄漏进 Claude Code 的 Ink UI。调试用 `CC_PROXY_LOG=1`（stderr）与 `CC_PROXY_DEBUG=1`（请求日志落盘）。
 - 设置页安全链：Host 校验 → Origin 校验 → 一次性 bootstrap nonce（30s/256 容量）→ token；仅监听 127.0.0.1。改动认证链时须保持 token 不进 URL/终端输出。
 - 配置写入使用同目录临时文件 + rename 原子替换，新文件 mode 0600、更新保留原 mode。
+- `~/.cc-proxy/runtime/` 存放运行时快照（upstream-health.json、recent-requests.json，均 mode 0600），**可整目录删除**，代理会重建。
 
 ## OpenSpec
 

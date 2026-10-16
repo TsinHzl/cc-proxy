@@ -22,7 +22,7 @@
 - [x] T9 proxy.js 请求完成处埋点 + `GET /api/recent-requests`（读落盘文件，缺失返回空数组）+ 设置页"最近请求"表（点击展开脱敏详情）；渲染函数遵守 ≤800 行——验证：API 测试 + 页面节点断言
 
 ### 收尾
-- [ ] T10 全量回归（`node --test --test-timeout=15000 "test/"*.test.mjs` 全部通过）+ CLAUDE.md 架构图补充新模块与 runtime/ 目录约定（快照文件 mode 0600、可整目录删除）——验证：全量测试 0 fail
+- [x] T10 全量回归（`node --test --test-timeout=15000 "test/"*.test.mjs` 全部通过）+ CLAUDE.md 架构图补充新模块与 runtime/ 目录约定（快照文件 mode 0600、可整目录删除）——验证：全量测试 0 fail
 
 ## 验收标准
 - [ ] 看板可导出近 30 天 CSV 与 JSON，行数与数值与 /api/usage 一致；未知 format 返回 400
