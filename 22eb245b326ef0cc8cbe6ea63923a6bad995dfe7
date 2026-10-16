@@ -1,0 +1,80 @@
+bin/settings-web.js
+  727a034631d893bc 444-449,458,770-772
+test/settings-web.test.mjs
+  727a034631d893bc 3574-3579
+test/upstream-health.test.mjs
+  727a034631d893bc 125-128
+test/usage-store.test.mjs
+  727a034631d893bc 138
+test/thinking-text.test.mjs
+  727a034631d893bc 416-418
+src/upstream-health.js
+  727a034631d893bc 63-68,70-72
+test/cli.test.mjs
+  727a034631d893bc 152
+src/thinking-text.js
+  727a034631d893bc 328-333
+src/proxy.js
+  727a034631d893bc 289,294-298,359-363,439-441,446,456-457
+bin/claude-proxy.js
+  727a034631d893bc 80-81,154-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "22eb245b326ef0cc8cbe6ea63923a6bad995dfe7",
+  "prompts": {
+    "0c522411e3c19a60": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "80f06431-81ed-4226-bc0a-3287342b0588",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 401,
+      "total_deletions": 0,
+      "accepted_lines": 401,
+      "overriden_lines": 0
+    },
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 72,
+      "total_deletions": 26,
+      "accepted_lines": 68,
+      "overriden_lines": 0
+    },
+    "8cbd57a8efb755e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d4c75a4-a888-4b7c-a3d9-cd15fbf7d5b2",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 292,
+      "total_deletions": 87,
+      "accepted_lines": 91,
+      "overriden_lines": 0
+    },
+    "c1a319df9fadfb5f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9297483c-f1a5-4734-9423-95ff08758837",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 423,
+      "total_deletions": 117,
+      "accepted_lines": 420,
+      "overriden_lines": 0
+    }
+  }
+}
