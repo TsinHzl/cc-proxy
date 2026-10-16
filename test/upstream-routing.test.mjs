@@ -52,7 +52,8 @@ test('primary opens after 3 consecutive failures; later requests skip primary', 
             assert.equal(await res.text(), 'from-backup');
         }
         assert.equal(primary.calls(), 3);
-        assert.equal(breaker.getState(primary.hostPortLabel ?? '127.0.0.1'), 'open');
+        // 主上游 breaker 键与 proxy 内部一致：labelOf = name || target.host（无 name → host）。
+        assert.equal(breaker.getState('127.0.0.1'), 'open');
         // 第 4 次：主上游已 open，不再发请求，直达备用。
         const res4 = await send();
         assert.equal(await res4.text(), 'from-backup');

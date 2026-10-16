@@ -283,10 +283,6 @@ export function createProxyServer({
         req.on('end', () => {
             const bodyBuffer = Buffer.concat(chunks);
             const target = resolveUpstream(req.url, baseUrlEnv);
-            // targets 列表：经 breaker 过滤与健康分排序后的有序上游
-            // （首项为首选上游，详见 buildTargets）。
-            const targets = buildTargets(req, target);
-
             const isClaudeCode = isClaudeCodeUserAgent(req.headers['user-agent']);
             const requestStartedAt = new Date();
 
@@ -351,6 +347,11 @@ export function createProxyServer({
                 }
             }
 
+            // targets 列表：经 breaker 过滤与健康分排序后的有序上游
+            // （首项为首选上游，详见 buildTargets）。置于拦截判定之后：
+            // 被拦截的请求不触达上游，不应消耗 half-open 探测名额。
+            const targets = buildTargets(req, target);
+
             // 采样防重：sampled 标志覆盖成功收尾与连接错误回调；ttfbAt 由
             // 响应回调写入（上游响应头到达，含 failover 重试耗时，即用户
             // 感知的首字节口径），连接失败路径保持 0（无真实 TTFB）。
@@ -362,10 +363,13 @@ export function createProxyServer({
             // 熔断器同请求内去重：同一上游的多次重试失败只记一次（连续失败
             // 计数按「请求」为单位，不按重试尝试次数）。
             const probedThisRequest = new Set();
-            const recordUpstreamHealth = (ok, ttftMs = null, { connectionLevel = false } = {}) => {
+            const recordUpstreamHealth = (ok, ttftMs = null, { connectionLevel = false, breakerCount = true } = {}) => {
                 if (ok) {
                     // 成功即清零该上游熔断计数（half-open 探测成功 → closed）。
-                    breaker?.recordSuccess(activeUpstreamId);
+                    // breakerCount=false：FAILOVER 状态码（429/5xx）路径——响应头
+                    // 到达记健康样本成功，但对熔断器记败（下方 statusCodeFails），
+                    // 不先 recordSuccess 清零、否则连续失败计数无法累积。
+                    if (breakerCount) breaker?.recordSuccess(activeUpstreamId);
                     upstreamHealth?.recordRequest(activeUpstreamId, { ok: true, ttftMs });
                 } else {
                     // 流中失败（connectionLevel=false）：请求已由响应头到达时的
@@ -415,11 +419,12 @@ export function createProxyServer({
                 ttfbAt = Date.now();
                 // 响应头到达即记成功样本（含最终返回 4xx/5xx 的上���——该上游
                 // 本身可达，连接面是健康的）。
-                recordUpstreamHealth(true, ttfbAt - requestStartedAt.getTime());
+                recordUpstreamHealth(true, ttfbAt - requestStartedAt.getTime(),
+                    { breakerCount: !statusCodeFails });
                 // 触发故障转移的状态码（429/5xx）对熔断器记败：主上游连续
                 // 429/5xx 达阈值后熔断（onProbe 已覆盖切换路径，此处覆盖末位
                 // 上游的最终错误响应——该请求无成功交付）。非 FAILOVER 状态码
-                // 视为该上游连接面健康，不记败。
+                // 视为该上游连接面健康，记成功。
                 if (statusCodeFails && !probedThisRequest.has(activeUpstreamId)) {
                     probedThisRequest.add(activeUpstreamId);
                     breaker?.recordFailure(activeUpstreamId);
