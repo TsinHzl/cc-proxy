@@ -11,8 +11,8 @@
 - 验证方式：`node --test --test-timeout=15000 test/upstream-breaker.test.mjs` 通过
 
 ### T2 快照扩展与健康 tracker 集成
-- [ ] `src/upstream-health.js`：接受注入的 breaker，快照 upstreams 条目追加 `{ breaker: { state, consecutiveFailures, cooldownRemainingMs } }`；`readHealthSnapshot` 对缺失/非法字段容错为 closed
-- [ ] 扩展/新增测试：快照含 breaker 字段、旧快照文件兼容
+- [x] `src/upstream-health.js`：接受注入的 breaker，快照 upstreams 条目追加 `{ breaker: { state, consecutiveFailures, cooldownRemainingMs } }`；`readHealthSnapshot` 对缺失/非法字段容错为 closed
+- [x] 扩展/新增测试：快照含 breaker 字段、旧快照文件兼容
 - 验证方式：`node --test --test-timeout=15000 test/upstream-health.test.mjs` 通过
 
 ### T3 选路接入（主优先 + 健康降级 + 全熔断兜底）
