@@ -1,0 +1,27 @@
+bin/settings-page-health.js
+  727a034631d893bc 25-40,55-61
+bin/settings-page.js
+  727a034631d893bc 96-97
+test/settings-web.test.mjs
+  727a034631d893bc 3518-3581
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "46cf6791fa67f972c1698c8578a0315b9b3a922c",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 91,
+      "total_deletions": 2,
+      "accepted_lines": 91,
+      "overriden_lines": 0
+    }
+  }
+}
