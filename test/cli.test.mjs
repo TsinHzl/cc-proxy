@@ -149,7 +149,7 @@ test('no warning when usage under threshold or alerts unconfigured', (t) => {
             argv: ['node', BIN],
             readSettings: () => ({ alerts }),
             createTracker: (opts) => createUsageTracker({ usageFile, ...opts }),
-        importHistory: async () => ({ ok: true, imported: 0 }),
+            importHistory: async () => ({ ok: true, imported: 0 }),
             createProxy: () => server,
             spawnProcess: () => new EventEmitter(),
             warn: (msg) => warnings.push(msg)

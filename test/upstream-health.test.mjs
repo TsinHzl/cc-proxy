@@ -122,8 +122,10 @@ test('flush: debounced write via tmp+rename, mode 0600, readHealthSnapshot round
     tracker.recordFailover('a', 'b', 'HTTP 503');
     // 防抖窗口内文件尚未写出。
     assert.equal(fs.existsSync(file), false);
-    await new Promise((r) => setTimeout(r, 60));
-
+    // 轮询等待防抖落盘，避免慢机器上固定 sleep 不足导致 flaky。
+    for (let i = 0; i < 50 && !fs.existsSync(file); i++) {
+        await new Promise((r) => setTimeout(r, 10));
+    }
     assert.equal(fs.existsSync(file), true);
     // 目录内无残留 tmp 文件（rename 原子替换）。
     const leftovers = fs.readdirSync(path.join(dir, 'runtime')).filter((n) => n.includes('.tmp'));

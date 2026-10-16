@@ -413,7 +413,9 @@ test('proxy e2e: request log flags thinkingRewritten via onThinkingSeen', async 
         assert.equal(snapshot.entries[0].model, 'claude-sonnet-5');
         assert.ok(Number.isFinite(snapshot.entries[0].ttftMs) && snapshot.entries[0].ttftMs >= 0);
     } finally {
-        proxy.close();
+        // 等待连接排空，keep-alive 句柄残留会拖慢测试进程退出（与同文件
+        // 集成测试的 await close 模式保持一致）。
+        await new Promise((r) => proxy.close(r));
         upstream.close();
         fs.rmSync(home, { recursive: true, force: true });
     }

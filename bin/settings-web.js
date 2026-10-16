@@ -441,6 +441,12 @@ function buildUsageReport(envDir, read, usageStore) {
 function usageExportCsv(days) {
     const header = 'date,requests,inputTokens,outputTokens,'
         + 'cacheReadTokens,cacheCreationTokens,cost';
+    // 字段含逗号/引号/换行时按 RFC 4180 加引号转义（当前 date 来源固定，
+    // 转义为来源变更时的纵深防御）。
+    const escapeCsv = (v) => {
+        const s = String(v);
+        return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+    };
     const lines = days.map((day) => [
         day.date,
         day.requests,
@@ -449,7 +455,7 @@ function usageExportCsv(days) {
         day.cacheReadTokens,
         day.cacheCreationTokens,
         day.cost === null ? '' : day.cost
-    ].join(','));
+    ].map(escapeCsv).join(','));
     return [header, ...lines].join('\n') + '\n';
 }
 
@@ -761,7 +767,9 @@ export async function runSettingsWeb({
     const token = createToken();
     // 与代理运行时同一落盘层的用量存储（SQLite 优先，失败回退 JSON）：
     // /api/usage 与 /api/usage/export 经此读取，并透出 storage 模式标注。
-    const usageStore = await createUsageStore();
+    // 存储层初始化失败降级为 null：/api/usage 回退 JSON 读数，设置页整体
+    // 仍可启动（token 已生成，不能因存储异常中断服务）。
+    const usageStore = await createUsageStore().catch(() => null);
     let expectedHost = null;
     let lifecycle;
     let server;

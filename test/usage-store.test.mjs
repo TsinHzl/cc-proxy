@@ -135,6 +135,7 @@ test('usage-store: readRecentDays 非法天数返回空数组', async (t) => {
 
 test('usage-store: sqlite 打开失败（目录不可写）回退 JSON 模式', async (t) => {
     if (process.platform === 'win32') return; // 权限模型不同，跳过
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root 下 chmod 不生效
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-ro-'));
     t.after(() => { try { fs.chmodSync(dir, 0o700); } catch {} fs.rmSync(dir, { recursive: true, force: true }); });
     fs.chmodSync(dir, 0o500); // 只读目录：DatabaseSync 打开子文件失败

@@ -60,11 +60,16 @@ export function createUpstreamHealthTracker({
         scheduleFlush();
     };
 
-    // 失败补记（请求已由 recordRequest 计数的流中失败）：仅累加 failures，
-    // 不重复计 requests，避免失败率分母虚增。
-    const recordFailure = (upstreamId) => {
+    // 失败埋点：ok=false 时可指定是否补计分母。
+    // - 请求已被 recordRequest 计数（流中失败）：countRequest=false（默认），
+    //   仅累加 failures，避免 requests 分母重复计数。
+    // - 连接级失败（从未收到响应头，recordRequest 未被调用）：countRequest=true，
+    //   补计 requests，否则成功率可能为负（failures > requests）。
+    const recordFailure = (upstreamId, { countRequest = false } = {}) => {
         if (typeof upstreamId !== 'string' || !upstreamId) return;
-        entryOf(upstreamId).failures += 1;
+        const entry = entryOf(upstreamId);
+        if (countRequest) entry.requests += 1;
+        entry.failures += 1;
         scheduleFlush();
     };
 

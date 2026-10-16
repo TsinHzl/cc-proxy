@@ -77,7 +77,8 @@ export async function main({
 
     // 历史 usage.json 导入（design D1）：早于任何请求转发，同步串行完成。
     // 导入失败 → 本次运行强制 JSON 模式（sqliteModule: null），原文件保留。
-    const importResult = await importHistory();
+    // 导入层抛错（fs/解析异常）同样降级，不得阻断代理启动。
+    const importResult = await importHistory().catch(() => ({ ok: false }));
     const usageTracker = await createTracker(
         importResult.ok ? undefined : { sqliteModule: null }
     );
@@ -150,8 +151,15 @@ export async function main({
                 if (latencyLine) warn(`[claude-proxy] ${latencyLine}`);
             }
             // 进程退出同步 flush 最终健康快照（绕过防抖定时器）。
-            upstreamHealth.flushNow();
-            requestLogTracker.flushNow();
+            // 落盘属尽力而为：磁盘 I/O 抛错不得阻断 server.close / process.exit，
+            // 否则 Ctrl-C 后进程挂死只能 kill -9。
+            for (const flush of [upstreamHealth.flushNow, requestLogTracker.flushNow]) {
+                try {
+                    flush();
+                } catch (err) {
+                    logger.error(`[cc-proxy] runtime flush failed: ${err?.message}`);
+                }
+            }
             server.close();
             if (signal) process.kill(process.pid, signal);
             process.exit(code ?? 0);

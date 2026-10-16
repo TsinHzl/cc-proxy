@@ -3571,7 +3571,12 @@ test('page script: renderRecentRequests renders rows, flags and toggle detail', 
     const first = table.options[1];
     assert.equal(first.options.length, 6);
     // 倒序展示：entries.reverse() 后首条数据行为原数组末项（07:59 失败请求）。
-    assert.equal(first.options[0].textContent, '10-15 15:59:00');
+    // 期望时间从同一 Date 动态生成本地字段，非 UTC+8 时区也能通过。
+    const expectedTs = new Date('2026-10-15T07:59:00.000Z');
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const expectedTime = `${pad2(expectedTs.getMonth() + 1)}-${pad2(expectedTs.getDate())} `
+        + `${pad2(expectedTs.getHours())}:${pad2(expectedTs.getMinutes())}:${pad2(expectedTs.getSeconds())}`;
+    assert.equal(first.options[0].textContent, expectedTime);
     assert.equal(first.options[1].textContent, '失败');
     assert.equal(first.options[2].textContent, 'primary');
     assert.equal(first.options[3].textContent, '');

@@ -325,7 +325,12 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         }
 
         if (isThinkingStart(event)) {
-            onThinkingSeen?.();
+            // 观测埋点被动触发：异常仅丢弃信号，不得截断 SSE 流破坏改写不变量。
+            try {
+                onThinkingSeen?.();
+            } catch {
+                // 忽略埋点错误
+            }
             pendingBlock = {
                 index: event.index,
                 thinking: '',

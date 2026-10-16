@@ -286,14 +286,16 @@ export function createProxyServer({
             // 上游健康埋点：activeUpstreamId 跟随故障转移切换（onFailover 更新），
             // 响应头到达 / 失败回调据此归属统计。
             let activeUpstreamId = target.host;
-            const recordUpstreamHealth = (ok, ttftMs = null) => {
+            const recordUpstreamHealth = (ok, ttftMs = null, { connectionLevel = false } = {}) => {
                 if (!upstreamHealth) return;
                 if (ok) {
                     upstreamHealth.recordRequest(activeUpstreamId, { ok: true, ttftMs });
                 } else {
-                    // 流中失败：请求已由响应头到达时的成功样本计数，这里仅补记
-                    // failures，避免 requests 分母重复计数。
-                    upstreamHealth.recordFailure(activeUpstreamId);
+                    // 流中失败（connectionLevel=false）：请求已由响应头到达时的
+                    // 成功样本计数，仅补记 failures，避免分母重复计数。
+                    // 连接级失败（未收到响应头，recordRequest 未被调用）需补计
+                    // 分母，否则 failures > requests 会令成功率为负。
+                    upstreamHealth.recordFailure(activeUpstreamId, { countRequest: connectionLevel });
                 }
             };
             const recordLatency = (status) => {
@@ -354,6 +356,11 @@ export function createProxyServer({
                     upstreamRes.on('error', () => {
                         recordLatency(0);
                         recordUpstreamHealth(false);
+                        // 流中失败：响应头已到达并计过成功样本，仅补记元数据。
+                        recordRequestLog({
+                            statusCode: null,
+                            responseHeaders: upstreamRes.headers
+                        });
                         if (!res.headersSent) res.end();
                     });
                     upstreamRes.on('end', () => {
@@ -429,11 +436,14 @@ export function createProxyServer({
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     } catch (err) {
                         logger.error('[cc-proxy] stream transform failed:', err.message);
+                        // 先捕获客户端状态再 end()：end() 后 writableEnded 恒为
+                        // true，事后判断永不可达。
+                        const clientGone = res.destroyed || res.writableEnded;
                         res.end();
                         // 流已失败，状态码不再可信，记 0 哨兵而非上游 200。
                         recordLatency(0);
                         // 客户端主动断开（Ctrl+C/断连）不是上游故障，不计失败。
-                        if (!res.destroyed && !res.writableEnded) recordUpstreamHealth(false);
+                        if (!clientGone) recordUpstreamHealth(false);
                         recordRequestLog({
                             statusCode: null,
                             responseHeaders: upstreamRes.headers
@@ -443,8 +453,8 @@ export function createProxyServer({
                 })();
             }, (err) => {
                 logger.error('[cc-proxy] upstream error:', err.message);
-                // 连接级失败（未收到上游响应）计入失败样本。
-                recordUpstreamHealth(false);
+                // 连接级失败（未收到上游响应）计入失败样本（含分母补计）。
+                recordUpstreamHealth(false, null, { connectionLevel: true });
                 recordRequestLog({ statusCode: null, ttftMs: 0 });
                 // 连接级失败（未收到上游响应）也落盘：排查网关兼容性最需要这段。
                 const logStream = dbg.requestStart(req, bodyBuffer);
