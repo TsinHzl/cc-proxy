@@ -489,9 +489,52 @@ test('page script: applySettings backfill syncs template select display', async 
     });
     await flushPageMicrotasks();
 
-    // 权威快照回填的 prompt 与模板全文一致：下拉应显示该模板名而非占位项。
+    // 权威快照回填的 prompt 即使与模板全文一致，下拉也默认回落 CC官方
+    // （selectedTemplate 仅由用户手动选择设置）。
     assert.equal(page.elements.systemPromptOverridePrompt.value, writer.text);
-    assert.equal(page.elements.systemPromptTemplate.value, writer.text);
+    assert.equal(page.elements.systemPromptTemplate.value, '__CC_OFFICIAL__');
+});
+
+test('page script: template select resets to CC官方 on input and applySettings', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' }
+                }
+            });
+        }
+        return pageJsonResponse(200, { ok: true, data: {} });
+    });
+    await flushPageMicrotasks();
+
+    const select = page.elements.systemPromptTemplate;
+    const textarea = page.elements.systemPromptOverridePrompt;
+
+    // 模拟用户手动选中某条模板（options[1] 为第一条预置模板）。
+    select.value = select.options[1].value;
+    await select.dispatch('change');
+    assert.equal(select.value, select.options[1].value);
+
+    // 输入框编辑（input 事件）→ 复位回落 CC官方。
+    textarea.value = '手动编辑的内容';
+    await textarea.dispatch('input');
+    assert.equal(select.value, '__CC_OFFICIAL__');
+
+    // 再次手动选中模板后，任一字段保存触发 applySettings 回填 → 复位为 CC官方。
+    select.value = select.options[1].value;
+    await select.dispatch('change');
+    assert.equal(select.value, select.options[1].value);
+    await page.change('thinkingAsText', true);
+    assert.equal(select.value, '__CC_OFFICIAL__');
 });
 
 test('page script: PATCH uses authoritative data and failed save can retry', async () => {
@@ -1844,7 +1887,8 @@ test('API: GET /api/upstream-health returns snapshot, empty fallback and 405', a
         upstreams: [{
             id: 'api.anthropic.com',
             requests: 4, failures: 1,
-            ttftP50: 120, ttftP95: 480, samples: 3
+            ttftP50: 120, ttftP95: 480, samples: 3,
+            breaker: { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 }
         }],
         failovers: [{ time: '2026-10-15T08:00:00.000Z', from: 'a', to: 'b', reason: 'HTTP 429' }]
     };
@@ -3512,6 +3556,70 @@ test('page script: export buttons fetch with token and trigger download', async 
     await flushPageMicrotasks();
     assert.equal(blobThrowing.elements.status.textContent, '用量导出失败');
     assert.equal(blobThrowing.objectUrls.length, 0);
+});
+
+test('page script: renderUpstreamHealth shows breaker badges per state', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, exceeded: false } }
+            });
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    upstreams: [
+                        // closed：不展示徽标。
+                        { id: 'closed-up', requests: 4, failures: 0, ttftP50: 100, ttftP95: 200,
+                            breaker: { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 } },
+                        // open：展示「熔断中」+ 剩余秒数（向上取整）。
+                        { id: 'open-up', requests: 4, failures: 4, ttftP50: null, ttftP95: null,
+                            breaker: { state: 'open', consecutiveFailures: 3, cooldownRemainingMs: 12500 } },
+                        // half-open：展示「半开探测」。
+                        { id: 'half-up', requests: 4, failures: 3, ttftP50: 90, ttftP95: 180,
+                            breaker: { state: 'half-open', consecutiveFailures: 3, cooldownRemainingMs: 0 } },
+                        // 旧快照无 breaker 字段：按 closed 容错，不展示徽标。
+                        { id: 'legacy-up', requests: 2, failures: 0, ttftP50: 80, ttftP95: 160 }
+                    ],
+                    failovers: []
+                }
+            });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { forwardSuggestionMode: false, thinkingAsText: true }
+            });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.healthBoard;
+    const rows = board.options.filter((el) => el.className === 'usage-summary');
+    assert.equal(rows.length, 4);
+    // closed 行：仅文本节点，无徽标 span。
+    assert.equal(rows[0].options.length, 1);
+    assert.match(String(rows[0].options[0].textContent), /closed-up · 成功率 100\.0%/);
+    // open 行：红色徽标「熔断中（剩余 13s）」——12500ms 向上取整为 13s。
+    const openBadge = rows[1].options[1];
+    assert.equal(openBadge.className, 'breaker-badge breaker-open');
+    assert.equal(openBadge.textContent, '熔断中（剩余 13s）');
+    // half-open 行：黄色徽标「半开探测」。
+    const halfBadge = rows[2].options[1];
+    assert.equal(halfBadge.className, 'breaker-badge breaker-half-open');
+    assert.equal(halfBadge.textContent, '半开探测');
+    // 无 breaker 字段的旧行：无徽标。
+    assert.equal(rows[3].options.length, 1);
 });
 
 test('page script: renderRecentRequests renders rows, flags and toggle detail', async () => {

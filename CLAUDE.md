@@ -24,6 +24,7 @@ bin/claude-proxy.js   CLI 入口：--version / --setting / 起代理 → 注入 
         │
 src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处理
   ├─ src/upstream.js          上游地址解析（ANTHROPIC_BASE_URL 或官方 API）与转发
+  ├─ src/upstream-breaker.js  上游熔断器（连续失败≥3 → open 跳过 → 30s 冷却 half-open 探测恢复）
   ├─ src/upstream-health.js   上游健康统计（滚动窗口成功率）→ ~/.cc-proxy/runtime/upstream-health.json
   ├─ src/thinking-text.js     thinking→text 流式改写（核心特性）
   ├─ src/suggestion-mode.js   [SUGGESTION MODE 请求识别与空响应拦截

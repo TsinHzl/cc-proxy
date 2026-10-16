@@ -100,6 +100,10 @@ key）。全部上游失败时，客户端收到最后一个错误响应。`name
 > 到日志。启动横幅与切换事件通过 `CC_PROXY_LOG=1` 可见，默认静默。未配置
 > `upstreams` 时行为与现状完全一致。
 
+熔断保护：某上游连续失败 ≥3 次后进入 `open`（选路跳过，设置页显示「熔断中」徽标
+及剩余冷却秒数），30s 冷却后下一个请求作为 `half-open` 探测放行——成功则恢复、
+失败则重新熔断。全部上游均熔断时忽略熔断按原顺序尝试（熔断不是最终否决）。
+
 ### 渲染效果
 
 仅当客户端 UA 匹配 `claude-cli` / `claude-code` 时生效，thinking 块会被改写为：
@@ -229,6 +233,7 @@ npm test        # node:test 单元 + 端到端测试
 | `src/thinking-text.js` | 渲染核心：格式化、流式改写、历史剥离、UA 门控 |
 | `src/proxy.js` | HTTP 代理与响应改写（SSE / 非流式 JSON）、Suggestion Mode 拦截、usage/debug 挂接 |
 | `src/upstream.js` | 上游地址解析与请求转发 |
+| `src/upstream-breaker.js` | 上游熔断器（连续失败≥3 → open → 30s 冷却 → half-open 探测恢复），供选路过滤与设置页徽标 |
 | `src/settings.js` | 配置读写（`~/.cc-proxy/config.json`），缺失/损坏回退默认值 |
 | `src/suggestion-mode.js` | 建议请求识别与空响应构建（流式/非流式） |
 | `src/usage.js` | 用量提取与按天持久化（`~/.cc-proxy/usage.json`），含 byModel 按模型分组 |

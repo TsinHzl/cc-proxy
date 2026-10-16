@@ -93,6 +93,8 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-summary { margin: 8px 4px 0; font-size: 12px; color: var(--muted); }
 .usage-summary .alert-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; background: var(--error); }
 .usage-summary .alert-dot.warn { background: var(--warn); }
+.breaker-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; font-size: 11px; border-radius: 10px; border: 1px solid var(--error); color: var(--error); }
+.breaker-badge.breaker-half-open { border-color: var(--warn); color: var(--warn); }
 .usage-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
 .usage-table th, .usage-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .usage-table th { color: var(--muted); font-weight: normal; }
@@ -416,7 +418,8 @@ const PAGE_SCRIPT = `
             = data.effortOverride?.level ?? 'high';
         document.getElementById('systemPromptOverridePrompt').value
             = data.systemPromptOverride?.prompt ?? '';
-        // 程序化回填（初次加载/保存后回填/失败回滚）不触发 input 事件，下拉需手动同步。
+        // 程序化回填不触发 input 事件：复位模板选中并同步下拉为默认 CC官方。
+        selectedTemplate = '';
         syncTemplateSelect();
     }
 
@@ -581,22 +584,17 @@ const PAGE_SCRIPT = `
         option.textContent = name;
         templateSelect.appendChild(option);
     }
-    // 下拉选中项始终反映输入框当前内容：内容与某条模板一致时显示该模板名，
-    // 否则（手动修改、预填捕获提示词、空）默认回落 CC官方项。
-    // value 存模板全文便于比对；__CC_OFFICIAL__ 为哨兵值，不与模板全文冲突。
+    // 下拉默认始终选中 CC官方：selectedTemplate 仅记录用户手动选中的模板，
+    // 程序化回填（applySettings）、输入框编辑均复位回落 CC官方。
+    // __CC_OFFICIAL__ 为哨兵值，不与模板全文（存于 option.value）冲突。
+    let selectedTemplate = '';
     function syncTemplateSelect() {
-        const current = document.getElementById('systemPromptOverridePrompt').value;
-        let matched = '';
-        for (const option of templateSelect.options) {
-            if (option.value && option.value === current) {
-                matched = current;
-                break;
-            }
-        }
-        templateSelect.value = matched || '__CC_OFFICIAL__';
+        templateSelect.value = selectedTemplate || '__CC_OFFICIAL__';
     }
     templateSelect.addEventListener('change', (event) => {
         const select = event.currentTarget;
+        // CC官方 为空哨兵：不锁定模板，后续内容变化始终回落 CC官方。
+        selectedTemplate = select.value === '__CC_OFFICIAL__' ? '' : select.value;
         if (select.value === '__CC_OFFICIAL__') {
             // 选中 CC官方：填入代理捕获的 CC 默认系统提示词（无捕获则清空），
             // 随后由 blur 提交链路统一保存。走 prefilling 互斥并在回调内
@@ -616,12 +614,15 @@ const PAGE_SCRIPT = `
         if (select.value) {
             document.getElementById('systemPromptOverridePrompt').value = select.value;
         }
-        // 选择后保留所选模板名；输入框内容随后变化时由 input 事件同步。
+        // 手动选模板后保持该模板名；输入框内容再变化时由 input 事件复位为 CC官方。
         syncTemplateSelect();
     });
 
-    // 输入框内容变化时同步下拉显示（手动编辑后不再匹配模板则回占位项）。
-    document.getElementById('systemPromptOverridePrompt').addEventListener('input', syncTemplateSelect);
+    // 输入框内容变化（手动编辑/程序化回填）时下拉复位为默认 CC官方。
+    document.getElementById('systemPromptOverridePrompt').addEventListener('input', () => {
+        selectedTemplate = '';
+        syncTemplateSelect();
+    });
 
     // 系统提示词输入框：blur 时与权威快照不同则提交 prompt。
     document.getElementById('systemPromptOverridePrompt').addEventListener('blur', async (event) => {
