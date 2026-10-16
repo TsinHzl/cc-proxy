@@ -1,0 +1,36 @@
+src/proxy.js
+  727a034631d893bc 270,274-275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "f6344df0431309f426e1ad6b340db124b5d3b178",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 14,
+      "total_deletions": 15,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    },
+    "fd83fc14e3957edb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0221c83a-72ac-41bc-9a17-6558efb03b83",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 132,
+      "total_deletions": 0,
+      "accepted_lines": 132,
+      "overriden_lines": 0
+    }
+  }
+}
