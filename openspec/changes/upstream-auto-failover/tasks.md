@@ -16,10 +16,10 @@
 - 验证方式：`node --test --test-timeout=15000 test/upstream-health.test.mjs` 通过
 
 ### T3 选路接入（主优先 + 健康降级 + 全熔断兜底）
-- [ ] `src/proxy.js`：每请求构造 targets 前经 breaker 过滤——主上游非 open 时 targets 仍以主上游开头；主上游 open 时按健康分对备用排序（成功率降序为主键，requests===0 或成功率差 <0.01 时按 TTFT p50 升序；无样本上游不参与排序、按原序兜底），取首个非 open 上游为首选；**全部上游均 open 时忽略熔断、按原顺序尝试全部（熔断不是最终否决）**
-- [ ] 健康分规则：TTFT 用 p50；requests 为 0 或样本不足（requests < 3）视为最差、不参与排序优化、按原序兜底；成功率持平（差 <0.01）时再比 TTFT p50
-- [ ] 埋点接线：转发成功/失败处调用 breaker recordSuccess/recordFailure，口径与 proposal「埋点口径」一致（连接级失败补计分母、流中失败不补；failover 后备用成功不重置主上游计数）；half-open 探测请求的成功/失败驱动状态迁移；全熔断兜底请求成功时同样调用 recordSuccess 关闭对应上游熔断
-- [ ] 更新/新增 proxy 选路测试（注入桩 tracker + breaker）
+- [x] `src/proxy.js`：每请求构造 targets 前经 breaker 过滤——主上游非 open 时 targets 仍以主上游开头；主上游 open 时按健康分对备用排序（成功率降序为主键，requests===0 或成功率差 <0.01 时按 TTFT p50 升序；无样本上游不参与排序、按原序兜底），取首个非 open 上游为首选；**全部上游均 open 时忽略熔断、按原顺序尝试全部（熔断不是最终否决）**
+- [x] 健康分规则：TTFT 用 p50；requests 为 0 或样本不足（requests < 3）视为最差、不参与排序优化、按原序兜底；成功率持平（差 <0.01）时再比 TTFT p50
+- [x] 埋点接线：转发成功/失败处调用 breaker recordSuccess/recordFailure，口径与 proposal「埋点口径」一致（连接级失败补计分母、流中失败不补；failover 后备用成功不重置主上游计数）；half-open 探测请求的成功/失败驱动状态迁移；全熔断兜底请求成功时同样调用 recordSuccess 关闭对应上游熔断
+- [x] 更新/新增 proxy 选路测试（注入桩 tracker + breaker）
 - 验证方式：相关测试通过；`node --test --test-timeout=15000 "test/"*.test.mjs` 全绿
 
 ### T4 设置页状态徽标
