@@ -1,6 +1,6 @@
 # tasks.md — upstream-auto-failover
 
-## 状态：DRAFT
+## 状态：IN_PROGRESS
 
 ## 任务
 
