@@ -64,6 +64,21 @@ test('half-open 并发第二个请求被拒绝（走备用）', () => {
     assert.deepEqual(b.probe('b'), { allowed: true, isProbe: false });
 });
 
+test('探测占用泄漏时超时惰性释放，不永久卡 half-open', () => {
+    const clock = makeClock();
+    const b = createUpstreamBreaker({ now: clock.now, cooldownMs: 30000 });
+    b.recordFailure('a');
+    b.recordFailure('a');
+    b.recordFailure('a');
+    clock.advance(30000);
+    b.probe('a'); // 探测放行后调用方永不回报（泄漏）
+    clock.advance(30000);
+    assert.deepEqual(b.probe('a'), { allowed: true, isProbe: true }); // 占用已失效，重新放行
+    // 惰性释放后的探测仍正常驱动状态迁移
+    b.recordSuccess('a');
+    assert.equal(b.getState('a'), 'closed');
+});
+
 test('探测成功恢复 closed，后续请求恢复主优先', () => {
     const clock = makeClock();
     const b = createUpstreamBreaker({ now: clock.now });

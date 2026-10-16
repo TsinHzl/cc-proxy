@@ -11,23 +11,28 @@ export function createUpstreamBreaker({
     cooldownMs = 30000,
     now = () => Date.now()
 } = {}) {
-    // id → { state, consecutiveFailures, openedAt, probeInFlight }
+    // id → { state, consecutiveFailures, openedAt, probeInFlight, probeStartedAt }
     const breakers = new Map();
 
     const entryOf = (id) => {
         let entry = breakers.get(id);
         if (!entry) {
-            entry = { state: STATE_CLOSED, consecutiveFailures: 0, openedAt: null, probeInFlight: false };
+            entry = { state: STATE_CLOSED, consecutiveFailures: 0, openedAt: null, probeInFlight: false, probeStartedAt: null };
             breakers.set(id, entry);
         }
         return entry;
     };
 
     // open 且冷却已过 → 迁移到 half-open（惰性迁移，无定时器）。
+    // half-open 探测占用超过 cooldownMs 视为调用方泄漏（请求取消/异常分支漏回报），
+    // 惰性释放占用，避免上游永久卡在 half-open 无请求可达。
     const settleIfCooldownElapsed = (entry) => {
-        if (entry.state !== STATE_OPEN) return;
-        if (now() - entry.openedAt >= cooldownMs) {
+        if (entry.state === STATE_OPEN && now() - entry.openedAt >= cooldownMs) {
             entry.state = STATE_HALF_OPEN;
+            entry.probeInFlight = false;
+        }
+        if (entry.state === STATE_HALF_OPEN && entry.probeInFlight
+            && now() - entry.probeStartedAt >= cooldownMs) {
             entry.probeInFlight = false;
         }
     };
@@ -66,9 +71,10 @@ export function createUpstreamBreaker({
         if (entry.state === STATE_CLOSED) return { allowed: true, isProbe: false };
         settleIfCooldownElapsed(entry);
         if (entry.state === STATE_OPEN) return { allowed: false, isProbe: false };
-        // half-open：同时最多 1 个探测请求。
+        // half-open：同时最多 1 个探测请求（占用超时由 settleIfCooldownElapsed 惰性释放）。
         if (entry.probeInFlight) return { allowed: false, isProbe: false };
         entry.probeInFlight = true;
+        entry.probeStartedAt = now();
         return { allowed: true, isProbe: true };
     };
 
