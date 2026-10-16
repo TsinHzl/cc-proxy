@@ -1,0 +1,25 @@
+test/upstream-breaker.test.mjs
+  727a034631d893bc 67-81
+src/upstream-breaker.js
+  727a034631d893bc 14,20,27-28,30,34-35,74,77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "9dc0424196f9051b53fda81e5def06d79197ae40",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 26,
+      "total_deletions": 5,
+      "accepted_lines": 26,
+      "overriden_lines": 0
+    }
+  }
+}
