@@ -1,6 +1,6 @@
 # 任务清单：observability-and-storage-hardening
 
-## 状态：IN_PROGRESS
+## 状态：ARCHIVED
 
 ## 任务
 
