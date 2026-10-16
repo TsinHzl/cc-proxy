@@ -23,8 +23,8 @@
 - 验证方式：相关测试通过；`node --test --test-timeout=15000 "test/"*.test.mjs` 全绿
 
 ### T4 设置页状态徽标
-- [ ] `bin/settings-page.js`：上游状态卡片追加状态徽标——closed 不展示、open 展示「熔断中」+ 冷却剩余秒数、half-open 展示「半开探测」
-- [ ] 更新设置页相关测试（快照注入）
+- [x] `bin/settings-page.js`：上游状态卡片追加状态徽标——closed 不展示、open 展示「熔断中」+ 冷却剩余秒数、half-open 展示「半开探测」
+- [x] 更新设置页相关测试（快照注入）
 - 验证方式：设置页测试通过；手动 `cc-proxy --setting` 目视确认
 
 ### T5 文档与归档准备
