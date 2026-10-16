@@ -3515,6 +3515,70 @@ test('page script: export buttons fetch with token and trigger download', async 
     assert.equal(blobThrowing.objectUrls.length, 0);
 });
 
+test('page script: renderUpstreamHealth shows breaker badges per state', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, exceeded: false } }
+            });
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    upstreams: [
+                        // closed：不展示徽标。
+                        { id: 'closed-up', requests: 4, failures: 0, ttftP50: 100, ttftP95: 200,
+                            breaker: { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 } },
+                        // open：展示「熔断中」+ 剩余秒数（向上取整）。
+                        { id: 'open-up', requests: 4, failures: 4, ttftP50: null, ttftP95: null,
+                            breaker: { state: 'open', consecutiveFailures: 3, cooldownRemainingMs: 12500 } },
+                        // half-open：展示「半开探测」。
+                        { id: 'half-up', requests: 4, failures: 3, ttftP50: 90, ttftP95: 180,
+                            breaker: { state: 'half-open', consecutiveFailures: 3, cooldownRemainingMs: 0 } },
+                        // 旧快照无 breaker 字段：按 closed 容错，不展示徽标。
+                        { id: 'legacy-up', requests: 2, failures: 0, ttftP50: 80, ttftP95: 160 }
+                    ],
+                    failovers: []
+                }
+            });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { forwardSuggestionMode: false, thinkingAsText: true }
+            });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.healthBoard;
+    const rows = board.options.filter((el) => el.className === 'usage-summary');
+    assert.equal(rows.length, 4);
+    // closed 行：仅文本节点，无徽标 span。
+    assert.equal(rows[0].options.length, 1);
+    assert.match(String(rows[0].options[0].textContent), /closed-up · 成功率 100\.0%/);
+    // open 行：红色徽标「熔断中（剩余 13s）」——12500ms 向上取整为 13s。
+    const openBadge = rows[1].options[1];
+    assert.equal(openBadge.className, 'breaker-badge breaker-open');
+    assert.equal(openBadge.textContent, '熔断中（剩余 13s）');
+    // half-open 行：黄色徽标「半开探测」。
+    const halfBadge = rows[2].options[1];
+    assert.equal(halfBadge.className, 'breaker-badge breaker-half-open');
+    assert.equal(halfBadge.textContent, '半开探测');
+    // 无 breaker 字段的旧行：无徽标。
+    assert.equal(rows[3].options.length, 1);
+});
+
 test('page script: renderRecentRequests renders rows, flags and toggle detail', async () => {
     const entries = [
         {

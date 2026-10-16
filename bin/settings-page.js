@@ -93,6 +93,8 @@ textarea:disabled { cursor: wait; opacity: .62; }
 .usage-summary { margin: 8px 4px 0; font-size: 12px; color: var(--muted); }
 .usage-summary .alert-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; background: var(--error); }
 .usage-summary .alert-dot.warn { background: var(--warn); }
+.breaker-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; font-size: 11px; border-radius: 10px; border: 1px solid var(--error); color: var(--error); }
+.breaker-badge.breaker-half-open { border-color: var(--warn); color: var(--warn); }
 .usage-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
 .usage-table th, .usage-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
 .usage-table th { color: var(--muted); font-weight: normal; }

@@ -22,6 +22,22 @@ export const HEALTH_BOARD_SCRIPT = `
             + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
 
+    // 熔断状态徽标：closed 不展示；open 展示「熔断中」+ 冷却剩余秒数；
+    // half-open 展示「半开探测」。字段缺失/非法按 closed 容错（与后端一致）。
+    function breakerBadge(upstream) {
+        const b = upstream?.breaker;
+        if (!b || typeof b !== 'object') return null;
+        if (b.state === 'open') {
+            const secs = Number.isFinite(b.cooldownRemainingMs)
+                ? Math.max(0, Math.ceil(b.cooldownRemainingMs / 1000)) : 0;
+            return { className: 'breaker-badge breaker-open', label: '熔断中（剩余 ' + secs + 's）' };
+        }
+        if (b.state === 'half-open') {
+            return { className: 'breaker-badge breaker-half-open', label: '半开探测' };
+        }
+        return null;
+    }
+
     // 单上游行：成功率 = (requests - failures) / requests，无请求时不计。
     function renderHealthUpstream(board, upstream) {
         const row = document.createElement('p');
@@ -36,6 +52,13 @@ export const HEALTH_BOARD_SCRIPT = `
                 + ' · 请求 ' + String(upstream.requests ?? 0)
                 + ' · 失败 ' + String(upstream.failures || 0)
         ));
+        const badge = breakerBadge(upstream);
+        if (badge) {
+            const dot = document.createElement('span');
+            dot.className = badge.className;
+            dot.textContent = badge.label;
+            row.appendChild(dot);
+        }
         board.appendChild(row);
     }
 
