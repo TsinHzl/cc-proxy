@@ -72,18 +72,21 @@ function extractModelFromResponseEvents(events) {
 }
 
 // Non-streaming JSON responses: convert thinking content blocks to rendered
-// dim-blockquote text blocks (signatures stripped), CC UA only.
+// dim-blockquote text blocks (signatures stripped), CC UA only. Returns
+// thinkingRewritten so request-log recording can flag thinking conversion.
 function transformNonStreamingResponse(body, thinkingAsText) {
     let parsed;
     try {
         parsed = JSON.parse(body.toString('utf8'));
     } catch {
-        return { body, usage: null, model: null };
+        return { body, usage: null, model: null, thinkingRewritten: false };
     }
     const model = typeof parsed?.model === 'string' && parsed.model ? parsed.model : null;
-    if (!thinkingAsText) return { body, usage: extractUsage(parsed?.usage), model };
+    if (!thinkingAsText) {
+        return { body, usage: extractUsage(parsed?.usage), model, thinkingRewritten: false };
+    }
     if (parsed?.type !== 'message' || !Array.isArray(parsed.content)) {
-        return { body, usage: extractUsage(parsed?.usage), model };
+        return { body, usage: extractUsage(parsed?.usage), model, thinkingRewritten: false };
     }
 
     let changed = false;
@@ -95,9 +98,16 @@ function transformNonStreamingResponse(body, thinkingAsText) {
     });
     // 无 thinking 块时保留原始字节（避免多余重序列化改变转义/空白）；
     // usage 提取只需 parse，不需要重写 body。
-    if (!changed) return { body, usage: extractUsage(parsed.usage), model };
+    if (!changed) {
+        return { body, usage: extractUsage(parsed.usage), model, thinkingRewritten: false };
+    }
     parsed.content = content;
-    return { body: Buffer.from(JSON.stringify(parsed), 'utf8'), usage: extractUsage(parsed.usage), model };
+    return {
+        body: Buffer.from(JSON.stringify(parsed), 'utf8'),
+        usage: extractUsage(parsed.usage),
+        model,
+        thinkingRewritten: true
+    };
 }
 
 // Bridges upstream SSE bytes into a parsed-event async iterator with
@@ -153,7 +163,9 @@ export function createProxyServer({
     effortOverride = null,
     systemPromptOverride = null,
     systemPromptCapture = null,
-    failoverUpstreams = []
+    upstreamHealth = null,
+    failoverUpstreams = [],
+    requestLog = null
 } = {}) {
     // 备用上游启动时解析一次并固定（不热加载）：baseUrl 复用主上游的
     // resolveUpstream 语义取 base 路径前缀，请求侧再拼接实际 path；
@@ -271,6 +283,21 @@ export function createProxyServer({
             // 感知的首字节口径），连接失败路径保持 0（无真实 TTFB）。
             let sampled = false;
             let ttfbAt = 0;
+            // 上游健康埋点：activeUpstreamId 跟随故障转移切换（onFailover 更新），
+            // 响应头到达 / 失败回调据此归属统计。
+            let activeUpstreamId = target.host;
+            const recordUpstreamHealth = (ok, ttftMs = null, { connectionLevel = false } = {}) => {
+                if (!upstreamHealth) return;
+                if (ok) {
+                    upstreamHealth.recordRequest(activeUpstreamId, { ok: true, ttftMs });
+                } else {
+                    // 流中失败（connectionLevel=false）：请求已由响应头到达时的
+                    // 成功样本计数，仅补记 failures，避免分母重复计数。
+                    // 连接级失败（未收到响应头，recordRequest 未被调用）需补计
+                    // 分母，否则 failures > requests 会令成功率为负。
+                    upstreamHealth.recordFailure(activeUpstreamId, { countRequest: connectionLevel });
+                }
+            };
             const recordLatency = (status) => {
                 if (sampled) return;
                 sampled = true;
@@ -283,11 +310,27 @@ export function createProxyServer({
                 });
             };
 
+            // 故障转移标志：onFailover 触发即代表本次请求经历过上游切换。
+            let failedOverFlag = false;
+            // 请求埋点收口：公共字段（头部/TTFT/故障转移）在此统一填写，
+            // 各收尾路径只传差异字段，避免补字段类改动遗漏某条路径。
+            const recordRequestLog = (overrides = {}) => {
+                requestLog?.record({
+                    upstreamId: activeUpstreamId,
+                    ttftMs: ttfbAt ? ttfbAt - requestStartedAt.getTime() : 0,
+                    failedOver: failedOverFlag,
+                    requestHeaders: req.headers,
+                    ...overrides
+                });
+            };
             forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 ttfbAt = Date.now();
+                // 响应头到达即记成功样本（含最终返回 4xx/5xx 的上���——该上游
+                // 本身可达，连接面是健康的）。
+                recordUpstreamHealth(true, ttfbAt - requestStartedAt.getTime());
 
                 // Non-CC clients: everything verbatim.
                 if (!isClaudeCode) {
@@ -299,6 +342,7 @@ export function createProxyServer({
                     const finishLog = () => dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     upstreamRes.on('end', finishLog);
                     res.on('close', finishLog);
+                    recordRequestLog({ statusCode: upstreamRes.statusCode });
                     return;
                 }
 
@@ -311,10 +355,17 @@ export function createProxyServer({
                     // 从统计中静默消失导致 p50/p95 偏乐观。
                     upstreamRes.on('error', () => {
                         recordLatency(0);
+                        recordUpstreamHealth(false);
+                        // 流中失败：响应头已到达并计过成功样本，仅补记元数据。
+                        recordRequestLog({
+                            statusCode: null,
+                            responseHeaders: upstreamRes.headers
+                        });
                         if (!res.headersSent) res.end();
                     });
                     upstreamRes.on('end', () => {
-                        const { body: out, usage: respUsage, model: parsedModel } = transformNonStreamingResponse(
+                        const { body: out, usage: respUsage, model: parsedModel,
+                            thinkingRewritten } = transformNonStreamingResponse(
                             Buffer.concat(bodyChunks),
                             thinkingAsText
                         );
@@ -327,6 +378,12 @@ export function createProxyServer({
                         res.end(out);
                         if (usage) usage.record(respUsage, parsedModel);
                         recordLatency(upstreamRes.statusCode);
+                        recordRequestLog({
+                            model: parsedModel,
+                            statusCode: upstreamRes.statusCode,
+                            thinkingRewritten,
+                            responseHeaders: upstreamRes.headers
+                        });
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     });
                     return;
@@ -338,17 +395,26 @@ export function createProxyServer({
                 res.writeHead(upstreamRes.statusCode, headers);
 
                 const events = createEventIterator(upstreamRes);
+                // thinking 改写信号：原始 thinking content_block_start 在
+                // transformThinkingAsTextEvents 内部被吞掉改写，须由其经
+                // onThinkingSeen 回调上报（输出流中只有惰性 text 块，探测不到）。
+                let thinkingSeen = false;
                 void (async () => {
                     try {
                         const collected = [];
                         // 计时锚点：请求到达代理的时刻，把网关侧缓冲也计入思考时长。
                         for await (const event of transformThinkingAsTextEvents(events, {
                             thinkingAsText,
-                            startedAtMs: requestStartedAt.getTime()
+                            startedAtMs: requestStartedAt.getTime(),
+                            onThinkingSeen: () => {
+                                thinkingSeen = true;
+                            }
                         })) {
+                            // message_start 无条件收集：请求埋点的 model 提取
+                            // 依赖它，不随 usage 开关缺席而丢失。
+                            if (event.type === 'message_start') collected.push(event);
                             if (usage || logStream) {
-                                // message_start/message_delta 之外的样本不参与统计，仅必要时保留以省内存。
-                                if (event.type === 'message_start' || event.type === 'message_delta') collected.push(event);
+                                if (event.type === 'message_delta') collected.push(event);
                                 dbg.recordEvent(logStream, event);
                             }
                             await writeEvent(res, event);
@@ -361,17 +427,35 @@ export function createProxyServer({
                             );
                         }
                         recordLatency(upstreamRes.statusCode);
+                        recordRequestLog({
+                            model: extractModelFromResponseEvents(collected),
+                            statusCode: upstreamRes.statusCode,
+                            thinkingRewritten: thinkingAsText && thinkingSeen,
+                            responseHeaders: upstreamRes.headers
+                        });
                         dbg.requestEnd(logStream, upstreamRes.statusCode, requestStartedAt);
                     } catch (err) {
                         logger.error('[cc-proxy] stream transform failed:', err.message);
+                        // 先捕获客户端状态再 end()：end() 后 writableEnded 恒为
+                        // true，事后判断永不可达。
+                        const clientGone = res.destroyed || res.writableEnded;
                         res.end();
                         // 流已失败，状态码不再可信，记 0 哨兵而非上游 200。
                         recordLatency(0);
+                        // 客户端主动断开（Ctrl+C/断连）不是上游故障，不计失败。
+                        if (!clientGone) recordUpstreamHealth(false);
+                        recordRequestLog({
+                            statusCode: null,
+                            responseHeaders: upstreamRes.headers
+                        });
                         dbg.requestEnd(logStream, `error: ${err.message}`, requestStartedAt);
                     }
                 })();
             }, (err) => {
                 logger.error('[cc-proxy] upstream error:', err.message);
+                // 连接级失败（未收到上游响应）计入失败样本（含分母补计）。
+                recordUpstreamHealth(false, null, { connectionLevel: true });
+                recordRequestLog({ statusCode: null, ttftMs: 0 });
                 // 连接级失败（未收到上游响应）也落盘：排查网关兼容性最需要这段。
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 dbg.requestEnd(logStream, `upstream error: ${err.message}`, requestStartedAt);
@@ -383,7 +467,16 @@ export function createProxyServer({
                     type: 'error',
                     error: { type: 'api_error', message: `upstream request failed: ${err.message}` }
                 }));
-            }, { isClientGone: () => res.destroyed || res.writableEnded });
+            }, {
+                isClientGone: () => res.destroyed || res.writableEnded,
+                // 故障转移埋点：切换事件（时间+原因）入环形缓冲，后续样本归属新上游。
+                onFailover: (from, to, reason) => {
+                    failedOverFlag = true;
+                    if (!upstreamHealth) return;
+                    upstreamHealth.recordFailover(from, to, reason);
+                    activeUpstreamId = to;
+                }
+            });
         });
     });
 }

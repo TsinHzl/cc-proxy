@@ -65,6 +65,100 @@ test('page: contains usage board nodes', () => {
     assert.match(html, /usage-table/);
     assert.match(html, /alert-dot/);
     assert.match(html, /\/api\/usage/);
+    assert.match(html, /usage-export-btn/);
+    assert.match(html, /api\/usage\/export/);
+    assert.match(html, /--warn/);
+    assert.match(html, /usage-bar-fill\.warn/);
+    assert.match(html, /alert-dot\.warn/);
+});
+
+test('page: contains upstream health board nodes', () => {
+    const html = renderSettingsPage();
+
+    assert.match(html, /上游状态/);
+    assert.match(html, /id="healthBoard"/);
+    assert.match(html, /id="healthPlaceholder"/);
+    assert.match(html, /aria-label="上游状态"/);
+    assert.match(html, /\/api\/upstream-health/);
+    assert.match(html, /暂无上游请求数据/);
+});
+
+test('page: contains recent requests board nodes', () => {
+    const html = renderSettingsPage();
+
+    assert.match(html, /最近请求/);
+    assert.match(html, /id="recentRequestsBoard"/);
+    assert.match(html, /id="recentRequestsPlaceholder"/);
+    assert.match(html, /aria-label="最近请求"/);
+    assert.match(html, /\/api\/recent-requests/);
+    assert.match(html, /暂无最近请求数据/);
+    assert.match(html, /最近请求不可用/);
+    // 详情行展开后的脱敏头摘要（请求头/响应头前缀）。
+    assert.match(html, /请求头 /);
+    assert.match(html, /响应头 /);
+});
+
+test('API: GET /api/recent-requests returns snapshot, empty fallback and 405', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-requests-api-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const logFile = path.join(home, '.cc-proxy', 'runtime', 'recent-requests.json');
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    // 缺失文件：返回空快照而非报错。
+    const missing = await fetch(`${api.origin}/api/recent-requests`, { headers: authHeaders(api) });
+    assert.equal(missing.status, 200);
+    const missingBody = await missing.json();
+    assert.equal(missingBody.ok, true);
+    assert.deepEqual(missingBody.data, { updatedAt: null, entries: [] });
+
+    // 落盘快照：原样读回（只读不缓存，每次请求重读文件）。
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const snapshot = {
+        updatedAt: '2026-10-15T08:00:00.000Z',
+        entries: [{
+            time: '2026-10-15T08:00:00.000Z',
+            upstream: 'api.anthropic.com',
+            model: 'claude-sonnet-5',
+            statusCode: 200,
+            ttftMs: 320,
+            thinkingRewritten: true,
+            failedOver: false,
+            requestHeaders: { 'x-api-key': '***abcd' },
+            responseHeaders: { 'content-type': 'text/event-stream' }
+        }]
+    };
+    fs.writeFileSync(logFile, JSON.stringify(snapshot));
+    const ok = await fetch(`${api.origin}/api/recent-requests`, { headers: authHeaders(api) });
+    assert.equal(ok.status, 200);
+    const okBody = await ok.json();
+    assert.equal(okBody.ok, true);
+    assert.deepEqual(okBody.data, snapshot);
+
+    // 损坏文件：回退空快照。
+    fs.writeFileSync(logFile, '{not json');
+    const corrupt = await fetch(`${api.origin}/api/recent-requests`, { headers: authHeaders(api) });
+    assert.deepEqual((await corrupt.json()).data, { updatedAt: null, entries: [] });
+
+    // 非 GET：405 + Allow。
+    const post = await fetch(`${api.origin}/api/recent-requests`, {
+        method: 'POST',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: '{}'
+    });
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET');
+
+    // 无 token：401（认证链在 handler 之前统一执行）。
+    const unauthorized = await fetch(`${api.origin}/api/recent-requests`);
+    assert.equal(unauthorized.status, 401);
 });
 
 test('page: contains no external resources or extra settings', () => {
@@ -101,16 +195,29 @@ function extractInlineScript(html) {
 function createPageElement({ disabled = false } = {}) {
     const listeners = new Map();
     const classes = new Set();
-    return {
+    const el = {
         checked: false,
         disabled,
         value: '',
         textContent: '',
+        // 导出按钮模拟：click() 仅打标，供断言下载链路触发。
+        clicked: false,
+        click() {
+            this.clicked = true;
+        },
         // select 元素模拟：appendChild 收集子 option，供 syncTemplateSelect 遍历比对。
         options: [],
         appendChild(child) {
             this.options.push(child);
         },
+        // 详情行插入：row.after(detail) 依赖兄弟插入（最近请求表展开详情）。
+        after(...nodes) {
+            this.options.push(...nodes);
+        },
+        remove() {
+            this.removed = true;
+        },
+        nextSibling: null,
         style: {},
         // alert-dot 设置 aria-label 需要setAttribute。
         setAttribute(name, value) {
@@ -132,6 +239,18 @@ function createPageElement({ disabled = false } = {}) {
             await listeners.get(type)?.({ type, target: this, currentTarget: this });
         }
     };
+    // className 与 classList 联动：详情行按 className==='request-detail' 判定，
+    // mock 下需同步到 classes Set 才能命中 nextSibling.remove() 分支。
+    Object.defineProperty(el, 'className', {
+        get: () => [...classes].join(' '),
+        set: (value) => {
+            classes.clear();
+            for (const name of String(value).split(/\s+/)) {
+                if (name) classes.add(name);
+            }
+        }
+    });
+    return el;
 }
 
 async function flushPageMicrotasks() {
@@ -187,9 +306,17 @@ function createPageHarness(fetchHandler) {
             )
         }),
         status: createPageElement(),
-        usageBoard: createPageElement()
+        usageBoard: createPageElement(),
+        healthBoard: createPageElement(),
+        healthPlaceholder: createPageElement(),
+        recentRequestsBoard: createPageElement(),
+        recentRequestsPlaceholder: createPageElement()
     };
     const calls = [];
+    // 导出下载链路：记录 createElement 产物与 blob URL 生命周期。
+    const created = [];
+    const objectUrls = [];
+    const revokedUrls = [];
     class TestWritableStream {}
     const stores = new Map();
     const sessionStorage = {
@@ -201,9 +328,23 @@ function createPageHarness(fetchHandler) {
     const vmContext = {
         document: {
             getElementById: (id) => elements[id],
-            createElement: () => createPageElement(),
+            createElement: () => {
+                const el = createPageElement();
+                created.push(el);
+                return el;
+            },
             createTextNode: (text) => ({ textContent: text, nodeType: 3 })
         },
+        URL: {
+            createObjectURL(blob) {
+                const url = 'blob:mock-' + objectUrls.length;
+                objectUrls.push({ blob, url });
+                return url;
+            },
+            revokeObjectURL: (url) => revokedUrls.push(url)
+        },
+        // 导出下载链路的 revoke 推迟到宏任务，沙箱需显式注入宿主定时器。
+        setTimeout,
         fetch: async (url, options = {}) => {
             const call = { url, options };
             calls.push(call);
@@ -223,6 +364,9 @@ function createPageHarness(fetchHandler) {
         calls,
         elements,
         sessionStorage,
+        created,
+        objectUrls,
+        revokedUrls,
         get reloadCount() {
             return reloadCount;
         },
@@ -261,6 +405,12 @@ test('page script: waits for bootstrap and initial load before enabling switches
                 data: { days: [], alert: { dailyTokens: 0, exceeded: false } }
             });
         }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/settings') return settings.promise;
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
@@ -281,6 +431,8 @@ test('page script: waits for bootstrap and initial load before enabling switches
     assert.deepEqual(page.calls.map(({ url }) => url), [
         '/api/bootstrap',
         '/api/usage',
+        '/api/upstream-health',
+        '/api/recent-requests',
         '/api/settings',
         '/api/session'
     ]);
@@ -1207,7 +1359,8 @@ test(
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
-                alerts: { dailyTokens: 0 },
+                alerts: { dailyTokens: 0, dailyCost: 0 },
+                usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
                 models: {},
                 upstreams: []
             }
@@ -1661,6 +1814,64 @@ test('API: captured-system-prompt rejects invalid token and non-GET', async (t) 
     });
     assert.equal(post.status, 405);
     assert.equal(post.headers.get('allow'), 'GET');
+});
+
+test('API: GET /api/upstream-health returns snapshot, empty fallback and 405', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-health-api-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const healthFile = path.join(home, '.cc-proxy', 'runtime', 'upstream-health.json');
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    // 缺失文件：返回空快照而非报错。
+    const missing = await fetch(`${api.origin}/api/upstream-health`, { headers: authHeaders(api) });
+    assert.equal(missing.status, 200);
+    const missingBody = await missing.json();
+    assert.equal(missingBody.ok, true);
+    assert.deepEqual(missingBody.data, { updatedAt: null, upstreams: [], failovers: [] });
+
+    // 落盘快照：原样读回（只读不缓存，每次请求重读文件）。
+    fs.mkdirSync(path.dirname(healthFile), { recursive: true });
+    const snapshot = {
+        updatedAt: '2026-10-15T08:00:00.000Z',
+        upstreams: [{
+            id: 'api.anthropic.com',
+            requests: 4, failures: 1,
+            ttftP50: 120, ttftP95: 480, samples: 3
+        }],
+        failovers: [{ time: '2026-10-15T08:00:00.000Z', from: 'a', to: 'b', reason: 'HTTP 429' }]
+    };
+    fs.writeFileSync(healthFile, JSON.stringify(snapshot));
+    const ok = await fetch(`${api.origin}/api/upstream-health`, { headers: authHeaders(api) });
+    assert.equal(ok.status, 200);
+    const okBody = await ok.json();
+    assert.equal(okBody.ok, true);
+    assert.deepEqual(okBody.data, snapshot);
+
+    // 损坏文件：回退空快照。
+    fs.writeFileSync(healthFile, '{not json');
+    const corrupt = await fetch(`${api.origin}/api/upstream-health`, { headers: authHeaders(api) });
+    assert.deepEqual((await corrupt.json()).data, { updatedAt: null, upstreams: [], failovers: [] });
+
+    // 非 GET：405 + Allow。
+    const post = await fetch(`${api.origin}/api/upstream-health`, {
+        method: 'POST',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: '{}'
+    });
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET');
+
+    // 无 token：401（认证链在 handler 之前统一执行）。
+    const unauthorized = await fetch(`${api.origin}/api/upstream-health`);
+    assert.equal(unauthorized.status, 401);
 });
 
 test('API: rejects invalid token, Host and Origin without writes', async (t) => {
@@ -2840,7 +3051,7 @@ test('API: GET /api/usage returns 30-day usage report', async (t) => {
     assert.equal(empty.cost, null);
 
     // 告警未配置（0）：不判超限。
-    assert.deepEqual(data.alert, { dailyTokens: 0, exceeded: false });
+    assert.deepEqual(data.alert, { dailyTokens: 0, dailyCost: 0, level: 'none', exceeded: false, ratio: 0 });
 });
 
 test('API: /api/usage alert exceeded when threshold configured', async (t) => {
@@ -2873,7 +3084,111 @@ test('API: /api/usage alert exceeded when threshold configured', async (t) => {
 
     const res = await fetch(`${api.origin}/api/usage`, { headers: authHeaders(api) });
     const { data } = await res.json();
-    assert.deepEqual(data.alert, { dailyTokens: 100, exceeded: true });
+    assert.deepEqual(data.alert, { dailyTokens: 100, dailyCost: 0, level: 'limit', exceeded: true, ratio: 5 });
+});
+
+test('API: GET /api/usage/export supports csv and json, rejects unknown format', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-usage-export-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const usageFile = path.join(home, '.cc-proxy', 'usage.json');
+    fs.mkdirSync(path.dirname(usageFile), { recursive: true });
+    const dayKey = (offset) => {
+        const d = new Date();
+        d.setDate(d.getDate() - offset);
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${d.getFullYear()}-${m}-${day}`;
+    };
+    // 今日 claude-sonnet-5 可定价 + 昨日无模型（cost 为 null → CSV 空列）。
+    fs.writeFileSync(usageFile, JSON.stringify({
+        [dayKey(0)]: {
+            requests: 2, inputTokens: 100, outputTokens: 50,
+            cacheReadTokens: 40, cacheCreationTokens: 10,
+            byModel: {
+                'claude-sonnet-5': {
+                    requests: 2, inputTokens: 100,
+                    outputTokens: 50, cacheReadTokens: 40, cacheCreationTokens: 10
+                }
+            }
+        },
+        [dayKey(1)]: { requests: 1, inputTokens: 10, outputTokens: 5 }
+    }));
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            alerts: { dailyTokens: 0 },
+            models: {}
+        }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    // CSV：表头 + 30 行（近 30 天每天一行，含无数据日）。
+    const csvRes = await fetch(
+        `${api.origin}/api/usage/export?format=csv`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(csvRes.status, 200);
+    assert.ok(
+        csvRes.headers.get('content-type').startsWith('text/csv')
+    );
+    const csvText = await csvRes.text();
+    const csvLines = csvText.trimEnd().split('\n');
+    assert.equal(csvLines.length, 31);
+    assert.equal(
+        csvLines[0],
+        'date,requests,inputTokens,outputTokens,'
+            + 'cacheReadTokens,cacheCreationTokens,cost'
+    );
+    // cost 列经 estimateCost 逐维度累加，存在浮点尾差，按数值近似比较。
+    const expectedCost = (100 * 3 + 50 * 15 + 40 * 0.3 + 10 * 3.75) / 1e6;
+    const todayCells = csvLines[1].split(',');
+    assert.deepEqual(
+        todayCells.slice(0, 6),
+        [dayKey(0), '2', '100', '50', '40', '10']
+    );
+    assert.ok(Math.abs(Number(todayCells[6]) - expectedCost) < 1e-12);
+    assert.equal(csvLines[2], `${dayKey(1)},1,10,5,0,0,`);
+
+    // JSON：与 /api/usage 数据结构一致。
+    const jsonRes = await fetch(
+        `${api.origin}/api/usage/export?format=json`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(jsonRes.status, 200);
+    assert.ok(
+        jsonRes.headers.get('content-type').startsWith('application/json')
+    );
+    const exportBody = await jsonRes.json();
+    const usageRes = await fetch(`${api.origin}/api/usage`, {
+        headers: authHeaders(api)
+    });
+    const usageBody = await usageRes.json();
+    assert.deepEqual(exportBody, usageBody);
+
+    // 未知 format → 400。
+    const badRes = await fetch(
+        `${api.origin}/api/usage/export?format=xml`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(badRes.status, 400);
+    const noFormatRes = await fetch(
+        `${api.origin}/api/usage/export`,
+        { headers: authHeaders(api) }
+    );
+    assert.equal(noFormatRes.status, 400);
+
+    // 非 GET → 405。
+    const postRes = await fetch(
+        `${api.origin}/api/usage/export?format=csv`,
+        { method: 'POST', headers: authHeaders(api) }
+    );
+    assert.equal(postRes.status, 405);
 });
 
 test('page script: renderUsageBoard renders bars, summary and per-model table', async () => {
@@ -2914,6 +3229,12 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
                 }
             });
         }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -2943,7 +3264,7 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
     assert.equal(summary.options[0].className, 'alert-dot');
     assert.match(
         String(summary.options[1].textContent),
-        /今日用量已超阈值/
+        /今日用量已超限/
     );
     assert.match(
         String(summary.options[2].textContent),
@@ -2979,6 +3300,306 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
     assert.equal(monthBars.options.length, 2);
     const monthSummary = board.options.filter((el) => el.className === 'usage-summary').pop();
     assert.match(String(monthSummary.options[2].textContent), /一个月 900 tokens/);
+
+    // 导出按钮行：两个入口恒在渲染（与 Tab/数据无关）。
+    const exportRow = board.options.filter((el) => el.className === 'usage-export').pop();
+    assert.ok(exportRow);
+    assert.deepEqual(exportRow.options.map((btn) => btn.textContent), ['导出 CSV', '导出 JSON']);
+});
+
+test('page script: usage alert warn level renders yellow bar, dot and ratio', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    days: [
+                        {
+                            date: '2026-10-15', requests: 1, totalTokens: 820,
+                            inputTokens: 820, outputTokens: 0,
+                            cacheReadTokens: 0, cacheCreationTokens: 0,
+                            hitRate: null, cost: null, byModel: {}
+                        }
+                    ],
+                    alert: { dailyTokens: 1000, dailyCost: 0, level: 'warn', exceeded: false, ratio: 0.82 }
+                }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.usageBoard;
+    // 今日柱：warn 级黄柱（含 warn 不含 alert）。
+    const bars = board.options.find((el) => el.className === 'usage-bars');
+    const todayFill = bars.options[0].options[0];
+    assert.ok(todayFill.className.includes('warn'));
+    assert.ok(!todayFill.className.includes('alert'));
+    // 汇总行：黄点（warn 类）+ 预警文案 + 已用 82%。
+    const summary = board.options.find((el) => el.className === 'usage-summary');
+    const dot = summary.options[0];
+    assert.equal(dot.className, 'alert-dot warn');
+    assert.equal(dot.attributes['aria-label'], '今日用量预警');
+    assert.match(String(summary.options[1].textContent), /今日用量预警 · 已用 82% · /);
+    // 导出按钮行恒在。
+    assert.ok(board.options.find((el) => el.className === 'usage-export'));
+});
+
+test('page script: export buttons fetch with token and trigger download', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url.startsWith('/api/usage/export')) {
+            return {
+                ok: true,
+                blob: async () => 'BLOB',
+                json: async () => { throw new Error('no json'); }
+            };
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.usageBoard;
+    // 空数据也渲染导出行（导出近 30 天不依赖当日有数据）。
+    const exportRow = board.options.find((el) => el.className === 'usage-export');
+    assert.ok(exportRow);
+    assert.deepEqual(exportRow.options.map((btn) => btn.textContent), ['导出 CSV', '导出 JSON']);
+
+    // 点击 CSV：带 token 请求导出接口 → blob URL → <a download> 点击 → 立即 revoke。
+    await exportRow.options[0].dispatch('click');
+    await flushPageMicrotasks();
+    const exportCall = page.calls.find((call) => call.url.startsWith('/api/usage/export'));
+    assert.ok(exportCall);
+    assert.equal(exportCall.url, '/api/usage/export?format=csv');
+    assert.equal(exportCall.options.headers['X-CC-Proxy-Token'], 'vm-token');
+    assert.equal(page.objectUrls.length, 1);
+    assert.equal(page.objectUrls[0].blob, 'BLOB');
+    const link = page.created.find((el) => el.download === 'cc-proxy-usage.csv');
+    assert.ok(link);
+    assert.equal(link.clicked, true);
+    // revoke 推迟到宏任务：flush 微任务后尚未执行，轮转宏任务队列后才释放。
+    assert.deepEqual(page.revokedUrls, []);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(page.revokedUrls, [page.objectUrls[0].url]);
+
+    // 点击 JSON：同链路，文件名随格式变化。
+    await exportRow.options[1].dispatch('click');
+    await flushPageMicrotasks();
+    const jsonCall = page.calls.filter((call) => call.url.startsWith('/api/usage/export')).pop();
+    assert.equal(jsonCall.url, '/api/usage/export?format=json');
+    assert.ok(page.created.find((el) => el.download === 'cc-proxy-usage.json'));
+
+    // 失败分支：接口非 2xx → 状态条报错且不创建 blob URL。
+    const failing = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url.startsWith('/api/usage/export')) return pageJsonResponse(500, { ok: false });
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+    const failingRow = failing.elements.usageBoard.options.find((el) => el.className === 'usage-export');
+    await failingRow.options[0].dispatch('click');
+    await flushPageMicrotasks();
+    assert.equal(failing.elements.status.textContent, '用量导出失败');
+    assert.ok(failing.elements.status.classList.contains('error'));
+    assert.equal(failing.objectUrls.length, 0);
+
+    // blob() 抛错分支：同样走 catch 报错且不创建 blob URL。
+    const blobThrowing = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url.startsWith('/api/usage/export')) {
+            return { ok: true, blob: async () => { throw new Error('boom'); } };
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+    const throwingRow = blobThrowing.elements.usageBoard.options.find((el) => el.className === 'usage-export');
+    await throwingRow.options[0].dispatch('click');
+    await flushPageMicrotasks();
+    assert.equal(blobThrowing.elements.status.textContent, '用量导出失败');
+    assert.equal(blobThrowing.objectUrls.length, 0);
+});
+
+test('page script: renderRecentRequests renders rows, flags and toggle detail', async () => {
+    const entries = [
+        {
+            time: '2026-10-15T08:00:00.000Z', statusCode: 200,
+            upstream: 'primary', model: 'claude-sonnet-5',
+            ttftMs: 850, thinkingRewritten: true, failedOver: true,
+            requestHeaders: { 'x-api-key': '[REDACTED]' },
+            responseHeaders: { 'content-type': 'text/event-stream' }
+        },
+        {
+            time: '2026-10-15T07:59:00.000Z', statusCode: null,
+            upstream: 'primary', model: null,
+            ttftMs: null, requestHeaders: null, responseHeaders: null
+        }
+    ];
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.recentRequestsBoard;
+    // 表头：六列；最新在前（entry[0] 为首条数据行）。
+    const table = board.options.find((el) => el.className === 'usage-table');
+    assert.ok(table);
+    assert.deepEqual(
+        table.options[0].options.map((th) => th.textContent),
+        ['时间', '状态', '上游', '模型', 'TTFT', '标记']
+    );
+    const first = table.options[1];
+    assert.equal(first.options.length, 6);
+    // 倒序展示：entries.reverse() 后首条数据行为原数组末项（07:59 失败请求）。
+    // 期望时间从同一 Date 动态生成本地字段，非 UTC+8 时区也能通过。
+    const expectedTs = new Date('2026-10-15T07:59:00.000Z');
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const expectedTime = `${pad2(expectedTs.getMonth() + 1)}-${pad2(expectedTs.getDate())} `
+        + `${pad2(expectedTs.getHours())}:${pad2(expectedTs.getMinutes())}:${pad2(expectedTs.getSeconds())}`;
+    assert.equal(first.options[0].textContent, expectedTime);
+    assert.equal(first.options[1].textContent, '失败');
+    assert.equal(first.options[2].textContent, 'primary');
+    assert.equal(first.options[3].textContent, '');
+    assert.equal(first.options[4].textContent, 'n/a');
+    assert.equal(first.options[5].textContent, '');
+    // 第二行：成功请求，含 💭/⇄ 标记。
+    const second = table.options[2];
+    assert.equal(second.options[1].textContent, '200');
+    assert.equal(second.options[3].textContent, 'claude-sonnet-5');
+    assert.equal(second.options[4].textContent, '850ms');
+    assert.equal(second.options[5].textContent, '💭 ⇄');
+
+    // 点击展开详情行：textContent 展示脱敏头 JSON；再次点击收起（remove）。
+    await second.dispatch('click');
+    // after() 把详情行插到 second.options（mock 无真实兄弟链），而非 table。
+    const detail = second.options[6];
+    assert.equal(detail.className, 'request-detail');
+    assert.match(String(detail.options[0].textContent), /请求头 /);
+    assert.match(String(detail.options[0].textContent), /content-type/);
+    // 模拟 DOM 兄弟链：row.nextSibling → 详情行，第二次点击走 remove 分支。
+    second.nextSibling = detail;
+    await second.dispatch('click');
+    assert.equal(detail.removed, true);
 });
 
 test('API: /api/usage rejects invalid token and non-GET', async (t) => {

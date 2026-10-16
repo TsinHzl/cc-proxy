@@ -138,7 +138,8 @@ function isMatchingStop(event, index) {
  * Events not related to a thinking block pass through unchanged.
  *
  * @param {AsyncIterable<Object>} events - Anthropic-format SSE events
- * @param {{thinkingAsText?: boolean, timeSource?: () => number, startedAtMs?: number}} options
+ * @param {{thinkingAsText?: boolean, timeSource?: () => number, startedAtMs?: number,
+ *   onThinkingSeen?: () => void}} options
  * @yields {Object} Anthropic-format SSE events
  */
 export async function* transformThinkingAsTextEvents(events, options = {}) {
@@ -146,6 +147,12 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         yield* events;
         return;
     }
+    // thinking 块出现信号：原始 thinking content_block_start 在下方被吞掉
+    //（改写为 text 事件流），代理侧无法从输出流探测，只能在此回调上报，
+    // 供请求埋点记录 thinkingRewritten。
+    const onThinkingSeen = typeof options.onThinkingSeen === 'function'
+        ? options.onThinkingSeen
+        : null;
 
     // 可注入时钟（测试用）；生产环境默认 Date.now。
     const now = typeof options.timeSource === 'function' ? options.timeSource : Date.now;
@@ -318,6 +325,12 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         }
 
         if (isThinkingStart(event)) {
+            // 观测埋点被动触发：异常仅丢弃信号，不得截断 SSE 流破坏改写不变量。
+            try {
+                onThinkingSeen?.();
+            } catch {
+                // 忽略埋点错误
+            }
             pendingBlock = {
                 index: event.index,
                 thinking: '',

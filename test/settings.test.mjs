@@ -11,7 +11,8 @@ const EXPECTED_DEFAULT_CONFIG = {
     thinkingAsText: true,
     effortOverride: { enabled: true, level: 'high' },
     systemPromptOverride: { enabled: false, prompt: '' },
-    alerts: { dailyTokens: 0 },
+    alerts: { dailyTokens: 0, dailyCost: 0 },
+    usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
     models: {},
     upstreams: []
 };
@@ -74,7 +75,8 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'high' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        alerts: { dailyTokens: 0 },
+        alerts: { dailyTokens: 0, dailyCost: 0 },
+        usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
         upstreams: []
     });
@@ -256,7 +258,7 @@ test('readConfig: invalid alerts.dailyTokens falls back to 0', (t) => {
     // alerts 整体非对象回退默认。
     for (const alerts of [null, 'x', 7, [1]]) {
         fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts }));
-        assert.deepEqual(readConfig(dir).alerts, { dailyTokens: 0 });
+        assert.deepEqual(readConfig(dir).alerts, { dailyTokens: 0, dailyCost: 0 });
     }
 });
 
@@ -316,7 +318,7 @@ test('writeConfig: alerts and models merge without losing sibling settings', (t)
     writeConfig({ alerts: { dailyTokens: 1000 }, models: { 'm1': { pricing: { input: 1 } } } }, dir);
     // 二次写其他字段时 alerts / models 不被静默丢弃。
     const out = writeConfig({ thinkingAsText: false }, dir);
-    assert.deepEqual(out.alerts, { dailyTokens: 1000 });
+    assert.deepEqual(out.alerts, { dailyTokens: 1000, dailyCost: 0 });
     assert.deepEqual(out.models['m1'], { input: 1 });
     assert.equal(out.thinkingAsText, false);
 });
@@ -410,7 +412,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        alerts: { dailyTokens: 0 },
+        alerts: { dailyTokens: 0, dailyCost: 0 },
+        usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
         upstreams: []
     });
@@ -422,7 +425,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        alerts: { dailyTokens: 0 },
+        alerts: { dailyTokens: 0, dailyCost: 0 },
+        usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
         upstreams: []
     });
@@ -434,7 +438,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: true,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        alerts: { dailyTokens: 0 },
+        alerts: { dailyTokens: 0, dailyCost: 0 },
+        usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
         upstreams: []
     });
@@ -446,7 +451,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'medium' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        alerts: { dailyTokens: 0 },
+        alerts: { dailyTokens: 0, dailyCost: 0 },
+        usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
         upstreams: []
     });
@@ -591,4 +597,57 @@ test('writeConfig: upstreams written to disk are preserved verbatim', (t) => {
     assert.deepEqual(writeConfig({ forwardSuggestionMode: false }, dir).upstreams, [
         { name: 'gw2', baseUrl: 'https://gw2.example.com' }
     ]);
+});
+
+// ---------- usageAlert / alerts.dailyCost ----------
+
+test('readConfig: invalid usageAlert thresholds fall back to defaults as a whole', (t) => {
+    const dir = tmpDir(t);
+    const invalid = [
+        { warnThreshold: 0.9, limitThreshold: 0.8 },   // warn >= limit
+        { warnThreshold: 0.8, limitThreshold: 1.2 },   // limit > 1
+        { warnThreshold: 0, limitThreshold: 1 },       // warn <= 0
+        { warnThreshold: -0.5, limitThreshold: 1 },
+        { warnThreshold: '0.8', limitThreshold: 1 },   // 非数值
+        { warnThreshold: NaN, limitThreshold: NaN },
+        { warnThreshold: 1, limitThreshold: 1 },       // 相等
+        null, 'x', 7, [1]
+    ];
+    for (const usageAlert of invalid) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ usageAlert }));
+        assert.deepEqual(readConfig(dir).usageAlert, { warnThreshold: 0.8, limitThreshold: 1 },
+            `usageAlert=${JSON.stringify(usageAlert)}`);
+    }
+});
+
+test('readConfig: valid usageAlert thresholds persist (boundary warn==limit rejected)', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'),
+        JSON.stringify({ usageAlert: { warnThreshold: 0.5, limitThreshold: 0.9 } }));
+    assert.deepEqual(readConfig(dir).usageAlert, { warnThreshold: 0.5, limitThreshold: 0.9 });
+    // limit 恰为 1 合法。
+    fs.writeFileSync(path.join(dir, 'config.json'),
+        JSON.stringify({ usageAlert: { warnThreshold: 0.6, limitThreshold: 1 } }));
+    assert.deepEqual(readConfig(dir).usageAlert, { warnThreshold: 0.6, limitThreshold: 1 });
+});
+
+test('readConfig: invalid alerts.dailyCost falls back to 0', (t) => {
+    const dir = tmpDir(t);
+    for (const dailyCost of [null, '10', 0, -5, Infinity, NaN, []]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyCost } }));
+        assert.equal(readConfig(dir).alerts.dailyCost, 0, `dailyCost=${JSON.stringify(dailyCost)}`);
+    }
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ alerts: { dailyCost: 12.5 } }));
+    assert.equal(readConfig(dir).alerts.dailyCost, 12.5);
+});
+
+test('writeConfig: usageAlert partial merge and alerts.dailyCost survive sibling writes', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({
+        alerts: { dailyCost: 5 },
+        usageAlert: { warnThreshold: 0.6, limitThreshold: 0.95 }
+    }, dir);
+    const out = writeConfig({ thinkingAsText: false }, dir);
+    assert.deepEqual(out.alerts, { dailyTokens: 0, dailyCost: 5 });
+    assert.deepEqual(out.usageAlert, { warnThreshold: 0.6, limitThreshold: 0.95 });
 });

@@ -9,8 +9,10 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createProxyServer } from '../src/proxy.js';
-import { createUsageTracker } from '../src/usage.js';
+import { createUsageStore, importJsonHistory } from '../src/usage-store.js';
 import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
+import { createUpstreamHealthTracker } from '../src/upstream-health.js';
+import { createRequestLogTracker } from '../src/request-log.js';
 import { cacheHitRate } from '../src/pricing.js';
 import { readConfig } from '../src/settings.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
@@ -48,13 +50,14 @@ export function isDirectExecution({
     }
 }
 
-export function main({
+export async function main({
     argv = process.argv,
     runSettings = runSettingsWeb,
     readSettings = readConfig,
     createProxy = createProxyServer,
     spawnProcess = spawn,
-    createTracker = createUsageTracker,
+    createTracker = createUsageStore,
+    importHistory = importJsonHistory,
     createLatency = createLatencyTracker,
     warn = (msg) => logger.warn(msg)
 } = {}) {
@@ -72,8 +75,20 @@ export function main({
 
     const originalBase = process.env.ANTHROPIC_BASE_URL;
 
-    const usageTracker = createTracker();
+    // 历史 usage.json 导入（design D1）：早于任何请求转发，同步串行完成。
+    // 导入失败 → 本次运行强制 JSON 模式（sqliteModule: null），原文件保留。
+    // 导入层抛错（fs/解析异常）同样降级，不得阻断代理启动。
+    const importResult = await importHistory().catch(() => ({ ok: false }));
+    const usageTracker = await createTracker(
+        importResult.ok ? undefined : { sqliteModule: null }
+    );
     const latencyTracker = createLatency();
+    // 上游健康统计（被动埋点）：防抖落盘 ~/.cc-proxy/runtime/upstream-health.json，
+    // 供设置页 /api/upstream-health 只读展示。
+    const upstreamHealth = createUpstreamHealthTracker();
+    // 最近请求日志（被动埋点）：环形缓冲 200 条 + 防抖落盘
+    // ~/.cc-proxy/runtime/recent-requests.json，供设置页只读展示。
+    const requestLogTracker = createRequestLogTracker();
     const settings = readSettings();
     const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = settings;
     // 当日用量告警：仅当 config 配置了 alerts.dailyTokens（> 0）且当日累计
@@ -91,6 +106,8 @@ export function main({
         baseUrlEnv: originalBase,
         usageTracker,
         latencyTracker,
+        upstreamHealth,
+        requestLog: requestLogTracker,
         forwardSuggestionMode,
         thinkingAsText,
         effortOverride,
@@ -132,6 +149,16 @@ export function main({
                 // 延迟汇总行：无样本（无请求或全部被拦截）时 null，不输出。
                 const latencyLine = formatLatencySummary(latencyTracker.summary());
                 if (latencyLine) warn(`[claude-proxy] ${latencyLine}`);
+            }
+            // 进程退出同步 flush 最终健康快照（绕过防抖定时器）。
+            // 落盘属尽力而为：磁盘 I/O 抛错不得阻断 server.close / process.exit，
+            // 否则 Ctrl-C 后进程挂死只能 kill -9。
+            for (const flush of [upstreamHealth.flushNow, requestLogTracker.flushNow]) {
+                try {
+                    flush();
+                } catch (err) {
+                    logger.error(`[cc-proxy] runtime flush failed: ${err?.message}`);
+                }
             }
             server.close();
             if (signal) process.kill(process.pid, signal);
