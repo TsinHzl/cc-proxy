@@ -1,0 +1,35 @@
+test/thinking-text.test.mjs
+  727a034631d893bc 4-6,17,374-421
+bin/settings-page.js
+  727a034631d893bc 6,194-199,654,660
+src/thinking-text.js
+  727a034631d893bc 141-142,150-155,328
+bin/claude-proxy.js
+  727a034631d893bc 15,88-90,109,154
+src/proxy.js
+  727a034631d893bc 75-76,82,85-87,89,101-103,105-110,167-168,311-323,343,360-361,374-379,391-394,401-404,406-408,410,423-428,437-440,448,464
+bin/settings-web.js
+  727a034631d893bc 8,516-533
+test/settings-web.test.mjs
+  727a034631d893bc 86-163,198,213-220,242-253,311-313,411-413,435,3235-3236,3344-3345,3399-3400,3462-3463,3503-3504,3517-3599
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "22f8dec141ceb266249a0b8260a158d85e10055c",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 528,
+      "total_deletions": 79,
+      "accepted_lines": 466,
+      "overriden_lines": 0
+    }
+  }
+}
