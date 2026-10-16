@@ -489,9 +489,52 @@ test('page script: applySettings backfill syncs template select display', async 
     });
     await flushPageMicrotasks();
 
-    // 权威快照回填的 prompt 与模板全文一致：下拉应显示该模板名而非占位项。
+    // 权威快照回填的 prompt 即使与模板全文一致，下拉也默认回落 CC官方
+    // （selectedTemplate 仅由用户手动选择设置）。
     assert.equal(page.elements.systemPromptOverridePrompt.value, writer.text);
-    assert.equal(page.elements.systemPromptTemplate.value, writer.text);
+    assert.equal(page.elements.systemPromptTemplate.value, '__CC_OFFICIAL__');
+});
+
+test('page script: template select resets to CC官方 on input and applySettings', async () => {
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' }
+                }
+            });
+        }
+        return pageJsonResponse(200, { ok: true, data: {} });
+    });
+    await flushPageMicrotasks();
+
+    const select = page.elements.systemPromptTemplate;
+    const textarea = page.elements.systemPromptOverridePrompt;
+
+    // 模拟用户手动选中某条模板（options[1] 为第一条预置模板）。
+    select.value = select.options[1].value;
+    await select.dispatch('change');
+    assert.equal(select.value, select.options[1].value);
+
+    // 输入框编辑（input 事件）→ 复位回落 CC官方。
+    textarea.value = '手动编辑的内容';
+    await textarea.dispatch('input');
+    assert.equal(select.value, '__CC_OFFICIAL__');
+
+    // 再次手动选中模板后，任一字段保存触发 applySettings 回填 → 复位为 CC官方。
+    select.value = select.options[1].value;
+    await select.dispatch('change');
+    assert.equal(select.value, select.options[1].value);
+    await page.change('thinkingAsText', true);
+    assert.equal(select.value, '__CC_OFFICIAL__');
 });
 
 test('page script: PATCH uses authoritative data and failed save can retry', async () => {
