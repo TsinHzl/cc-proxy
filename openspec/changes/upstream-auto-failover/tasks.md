@@ -5,9 +5,9 @@
 ## 任务
 
 ### T1 熔断器模块与测试
-- [ ] 新增 `src/upstream-breaker.js`：`createUpstreamBreaker({ failureThreshold = 3, cooldownMs = 30000, now })` → `{ recordSuccess(id), recordFailure(id), probe(id), isOpen(id), getState(id), getSnapshot() }`；状态机 closed →（连续失败≥3，成功清零）→ open（跳过）→ 30s 后 → half-open → 成功 closed / 失败 open（重新计时）
-- [ ] `probe(id)` 契约：返回 `{ allowed, isProbe }`；冷却已过且无并发探测占用时返回 `{ allowed: true, isProbe: true }` 并进入 half-open；并发第二个请求返回 `{ allowed: false, isProbe: false }`；冷却未过返回 `{ allowed: false, isProbe: false }`
-- [ ] 新增 `test/upstream-breaker.test.mjs`：熔断触发、成功清零、冷却期内跳过、半开放行与并发拒绝、探测成功恢复、探测失败重新熔断重新计时、时钟注入
+- [x] 新增 `src/upstream-breaker.js`：`createUpstreamBreaker({ failureThreshold = 3, cooldownMs = 30000, now })` → `{ recordSuccess(id), recordFailure(id), probe(id), isOpen(id), getState(id), getSnapshot() }`；状态机 closed →（连续失败≥3，成功清零）→ open（跳过）→ 30s 后 → half-open → 成功 closed / 失败 open（重新计时）
+- [x] `probe(id)` 契约：返回 `{ allowed, isProbe }`；冷却已过且无并发探测占用时返回 `{ allowed: true, isProbe: true }` 并进入 half-open；并发第二个请求返回 `{ allowed: false, isProbe: false }`；冷却未过返回 `{ allowed: false, isProbe: false }`
+- [x] 新增 `test/upstream-breaker.test.mjs`：熔断触发、成功清零、冷却期内跳过、半开放行与并发拒绝、探测成功恢复、探测失败重新熔断重新计时、时钟注入
 - 验证方式：`node --test --test-timeout=15000 test/upstream-breaker.test.mjs` 通过
 
 ### T2 快照扩展与健康 tracker 集成
