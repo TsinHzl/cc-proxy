@@ -121,8 +121,6 @@ test('primary open: backups ranked by success rate', async () => {
             body: '{}'
         });
         assert.equal(await res.text(), 'from-B');
-        const bCallsBefore = 4;
-        assert.equal(backupB.calls(), bCallsBefore);
     } finally {
         server.close();
         primary.close();

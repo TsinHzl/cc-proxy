@@ -267,11 +267,12 @@ export function createProxyServer({
         const allowed = ordered.filter((e) => !openLabels.has(labelOf(e)));
         // 全部 open（或全被过滤）：忽略熔断按原顺序尝试全部（兜底）。
         if (!allowed.length) return ordered;
-        // 首选若为 half-open 侯选（冷却已过），本请求即探测请求，须先经
+        // 首选若为 half-open 候选（冷却已过），本请求即探测请求，须先经
         // probe() 占用名额；probe 拒绝（并发探测占用）时跳过该上游。
         const head = allowed[0];
         const headLabel = labelOf(head);
-        if (!primaryOpen && headLabel === primaryLabel) return allowed; // 主上游 closed 快路径
+        if (!primaryOpen && headLabel === primaryLabel
+            && breaker.getState(primaryLabel) === 'closed') return allowed; // 仅真 closed 走快路径
         const verdict = breaker.probe(headLabel);
         if (verdict.allowed) return allowed;
         return allowed.slice(1).length ? allowed.slice(1) : ordered;
