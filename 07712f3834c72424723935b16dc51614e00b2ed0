@@ -1,0 +1,27 @@
+src/upstream.js
+  727a034631d893bc 31-33,62-65,67,81-83,115-116
+src/proxy.js
+  727a034631d893bc 2,15,169-170,195-197,205-211,213,215-217,219-279,286-288,362-364,367-369,375-379,411-414,419-426,571-577
+test/upstream-routing.test.mjs
+  727a034631d893bc 1-134,136,138-140,146-162,164-167,170-175,177,179-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "07712f3834c72424723935b16dc51614e00b2ed0",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 381,
+      "total_deletions": 21,
+      "accepted_lines": 374,
+      "overriden_lines": 7
+    }
+  }
+}
