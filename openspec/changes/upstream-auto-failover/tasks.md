@@ -28,8 +28,8 @@
 - 验证方式：设置页测试通过；手动 `cc-proxy --setting` 目视确认
 
 ### T5 文档与归档准备
-- [ ] README/CLAUDE.md 架构图补 upstream-breaker 一行
-- [ ] tasks.md 全部勾选后走归档流程
+- [x] README/CLAUDE.md 架构图补 upstream-breaker 一行
+- [x] tasks.md 全部勾选后走归档流程
 
 ## 验收标准
 
