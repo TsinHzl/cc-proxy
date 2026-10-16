@@ -19,7 +19,7 @@
 
 ### F4 请求级 debug 视图
 - [x] T8 新增 `src/request-log.js`：内存环形缓冲 200 条，仅元数据（时间/模型/上游/状态码/TTFT/是否 thinking 改写/是否故障转移），头部摘要 write-time 脱敏（redactHeaders 匹配 authorization/x-api-key/anthropic-api-key/cookie/proxy-authorization/set-cookie → '***'+末4位，≤4 位全 `***`，模块内二次校验键名，响应头摘要仅记录脱敏后认证类头值集合）；record 后防抖落盘 `~/.cc-proxy/runtime/recent-requests.json`（同 T4 pattern，文件 mode 0600）——验证：脱敏单元测试（含缺失头、短值边界、落盘文件无原文）+ 环形覆盖测试（201 条后恒 200）
-- [ ] T9 proxy.js 请求完成处埋点 + `GET /api/recent-requests`（读落盘文件，缺失返回空数组）+ 设置页"最近请求"表（点击展开脱敏详情）；渲染函数遵守 ≤800 行——验证：API 测试 + 页面节点断言
+- [x] T9 proxy.js 请求完成处埋点 + `GET /api/recent-requests`（读落盘文件，缺失返回空数组）+ 设置页"最近请求"表（点击展开脱敏详情）；渲染函数遵守 ≤800 行——验证：API 测试 + 页面节点断言
 
 ### 收尾
 - [ ] T10 全量回归（`node --test --test-timeout=15000 "test/"*.test.mjs` 全部通过）+ CLAUDE.md 架构图补充新模块与 runtime/ 目录约定（快照文件 mode 0600、可整目录删除）——验证：全量测试 0 fail
