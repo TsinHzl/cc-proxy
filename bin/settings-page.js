@@ -3,6 +3,7 @@
 // → 成功采权威快照 / 失败回滚 → 租约断开后保持禁用（setDisabled 由状态派生）。
 import { USAGE_BOARD_SCRIPT } from './settings-page-usage.js';
 import { HEALTH_BOARD_SCRIPT } from './settings-page-health.js';
+import { RECENT_REQUESTS_SCRIPT } from './settings-page-recent-requests.js';
 
 const PAGE_STYLES = `
 :root {
@@ -188,6 +189,12 @@ const PAGE_BODY = `
     <section class="card usage-card" aria-label="上游状态">
         <div id="healthBoard" aria-live="polite">
             <p id="healthPlaceholder" class="usage-empty">上游状态加载中…</p>
+        </div>
+    </section>
+    <p class="section-title">最近请求</p>
+    <section class="card usage-card" aria-label="最近请求">
+        <div id="recentRequestsBoard" aria-live="polite">
+            <p id="recentRequestsPlaceholder" class="usage-empty">最近请求加载中…</p>
         </div>
     </section>
     <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -644,12 +651,13 @@ const PAGE_SCRIPT = `
         return response.body;
     }
 
-` + USAGE_BOARD_SCRIPT + HEALTH_BOARD_SCRIPT + `
+` + USAGE_BOARD_SCRIPT + HEALTH_BOARD_SCRIPT + RECENT_REQUESTS_SCRIPT + `
 
     async function initialize() {
         await bootstrap();
         loadUsageBoard();
         loadUpstreamHealth();
+        loadRecentRequests();
         const [, body] = await Promise.all([load(), openLease()]);
         leaseActive = true;
         setDisabled(false);

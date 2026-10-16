@@ -5,6 +5,7 @@ import { readConfig, writeConfig } from '../src/settings.js';
 import { defaultUsagePath, readRecentDays } from '../src/usage.js';
 import { createUsageStore } from '../src/usage-store.js';
 import { readHealthSnapshot, defaultHealthPath } from '../src/upstream-health.js';
+import { readRequestLog, defaultRequestLogPath } from '../src/request-log.js';
 import { estimateCost, cacheHitRate, computeUsageAlert } from '../src/pricing.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
 import {
@@ -509,6 +510,24 @@ async function handleSettingsApiRequest(
         sendJson(res, 200, {
             ok: true,
             data: readHealthSnapshot(defaultHealthPath())
+        });
+        return;
+    }
+    if (url.pathname === '/api/recent-requests') {
+        if (req.method !== 'GET') {
+            sendJson(
+                res,
+                405,
+                { ok: false, error: '请求方法不支持' },
+                { allow: 'GET' }
+            );
+            return;
+        }
+        // 只读最近请求落盘文件（与 upstream-health 同口径：不缓存，最多滞后
+        // 防抖窗口 500ms）；缺失/损坏由 readRequestLog 回退空快照。
+        sendJson(res, 200, {
+            ok: true,
+            data: readRequestLog(defaultRequestLogPath())
         });
         return;
     }

@@ -83,6 +83,84 @@ test('page: contains upstream health board nodes', () => {
     assert.match(html, /暂无上游请求数据/);
 });
 
+test('page: contains recent requests board nodes', () => {
+    const html = renderSettingsPage();
+
+    assert.match(html, /最近请求/);
+    assert.match(html, /id="recentRequestsBoard"/);
+    assert.match(html, /id="recentRequestsPlaceholder"/);
+    assert.match(html, /aria-label="最近请求"/);
+    assert.match(html, /\/api\/recent-requests/);
+    assert.match(html, /暂无最近请求数据/);
+    assert.match(html, /最近请求不可用/);
+    // 详情行展开后的脱敏头摘要（请求头/响应头前缀）。
+    assert.match(html, /请求头 /);
+    assert.match(html, /响应头 /);
+});
+
+test('API: GET /api/recent-requests returns snapshot, empty fallback and 405', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-requests-api-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    const logFile = path.join(home, '.cc-proxy', 'runtime', 'recent-requests.json');
+    const realHomedir = os.homedir;
+    os.homedir = () => home;
+    t.after(() => { os.homedir = realHomedir; });
+
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        write: () => assert.fail('write should not run')
+    });
+    t.after(api.close);
+
+    // 缺失文件：返回空快照而非报错。
+    const missing = await fetch(`${api.origin}/api/recent-requests`, { headers: authHeaders(api) });
+    assert.equal(missing.status, 200);
+    const missingBody = await missing.json();
+    assert.equal(missingBody.ok, true);
+    assert.deepEqual(missingBody.data, { updatedAt: null, entries: [] });
+
+    // 落盘快照：原样读回（只读不缓存，每次请求重读文件）。
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    const snapshot = {
+        updatedAt: '2026-10-15T08:00:00.000Z',
+        entries: [{
+            time: '2026-10-15T08:00:00.000Z',
+            upstream: 'api.anthropic.com',
+            model: 'claude-sonnet-5',
+            statusCode: 200,
+            ttftMs: 320,
+            thinkingRewritten: true,
+            failedOver: false,
+            requestHeaders: { 'x-api-key': '***abcd' },
+            responseHeaders: { 'content-type': 'text/event-stream' }
+        }]
+    };
+    fs.writeFileSync(logFile, JSON.stringify(snapshot));
+    const ok = await fetch(`${api.origin}/api/recent-requests`, { headers: authHeaders(api) });
+    assert.equal(ok.status, 200);
+    const okBody = await ok.json();
+    assert.equal(okBody.ok, true);
+    assert.deepEqual(okBody.data, snapshot);
+
+    // 损坏文件：回退空快照。
+    fs.writeFileSync(logFile, '{not json');
+    const corrupt = await fetch(`${api.origin}/api/recent-requests`, { headers: authHeaders(api) });
+    assert.deepEqual((await corrupt.json()).data, { updatedAt: null, entries: [] });
+
+    // 非 GET：405 + Allow。
+    const post = await fetch(`${api.origin}/api/recent-requests`, {
+        method: 'POST',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: '{}'
+    });
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('allow'), 'GET');
+
+    // 无 token：401（认证链在 handler 之前统一执行）。
+    const unauthorized = await fetch(`${api.origin}/api/recent-requests`);
+    assert.equal(unauthorized.status, 401);
+});
+
 test('page: contains no external resources or extra settings', () => {
     const html = renderSettingsPage();
 
@@ -117,7 +195,7 @@ function extractInlineScript(html) {
 function createPageElement({ disabled = false } = {}) {
     const listeners = new Map();
     const classes = new Set();
-    return {
+    const el = {
         checked: false,
         disabled,
         value: '',
@@ -132,6 +210,14 @@ function createPageElement({ disabled = false } = {}) {
         appendChild(child) {
             this.options.push(child);
         },
+        // 详情行插入：row.after(detail) 依赖兄弟插入（最近请求表展开详情）。
+        after(...nodes) {
+            this.options.push(...nodes);
+        },
+        remove() {
+            this.removed = true;
+        },
+        nextSibling: null,
         style: {},
         // alert-dot 设置 aria-label 需要setAttribute。
         setAttribute(name, value) {
@@ -153,6 +239,18 @@ function createPageElement({ disabled = false } = {}) {
             await listeners.get(type)?.({ type, target: this, currentTarget: this });
         }
     };
+    // className 与 classList 联动：详情行按 className==='request-detail' 判定，
+    // mock 下需同步到 classes Set 才能命中 nextSibling.remove() 分支。
+    Object.defineProperty(el, 'className', {
+        get: () => [...classes].join(' '),
+        set: (value) => {
+            classes.clear();
+            for (const name of String(value).split(/\s+/)) {
+                if (name) classes.add(name);
+            }
+        }
+    });
+    return el;
 }
 
 async function flushPageMicrotasks() {
@@ -210,7 +308,9 @@ function createPageHarness(fetchHandler) {
         status: createPageElement(),
         usageBoard: createPageElement(),
         healthBoard: createPageElement(),
-        healthPlaceholder: createPageElement()
+        healthPlaceholder: createPageElement(),
+        recentRequestsBoard: createPageElement(),
+        recentRequestsPlaceholder: createPageElement()
     };
     const calls = [];
     // 导出下载链路：记录 createElement 产物与 blob URL 生命周期。
@@ -308,6 +408,9 @@ test('page script: waits for bootstrap and initial load before enabling switches
         if (url === '/api/upstream-health') {
             return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/settings') return settings.promise;
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
@@ -329,6 +432,7 @@ test('page script: waits for bootstrap and initial load before enabling switches
         '/api/bootstrap',
         '/api/usage',
         '/api/upstream-health',
+        '/api/recent-requests',
         '/api/settings',
         '/api/session'
     ]);
@@ -3128,6 +3232,9 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
         if (url === '/api/upstream-health') {
             return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3234,6 +3341,9 @@ test('page script: usage alert warn level renders yellow bar, dot and ratio', as
         if (url === '/api/upstream-health') {
             return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3285,6 +3395,9 @@ test('page script: export buttons fetch with token and trigger download', async 
         }
         if (url === '/api/upstream-health') {
             return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
         }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
@@ -3346,6 +3459,9 @@ test('page script: export buttons fetch with token and trigger download', async 
         if (url === '/api/upstream-health') {
             return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3384,6 +3500,9 @@ test('page script: export buttons fetch with token and trigger download', async 
         if (url === '/api/upstream-health') {
             return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
         }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries: [] } });
+        }
         if (url === '/api/session') return pageSessionResponse();
         throw new Error(`unexpected request: ${url}`);
     });
@@ -3393,6 +3512,89 @@ test('page script: export buttons fetch with token and trigger download', async 
     await flushPageMicrotasks();
     assert.equal(blobThrowing.elements.status.textContent, '用量导出失败');
     assert.equal(blobThrowing.objectUrls.length, 0);
+});
+
+test('page script: renderRecentRequests renders rows, flags and toggle detail', async () => {
+    const entries = [
+        {
+            time: '2026-10-15T08:00:00.000Z', statusCode: 200,
+            upstream: 'primary', model: 'claude-sonnet-5',
+            ttftMs: 850, thinkingRewritten: true, failedOver: true,
+            requestHeaders: { 'x-api-key': '[REDACTED]' },
+            responseHeaders: { 'content-type': 'text/event-stream' }
+        },
+        {
+            time: '2026-10-15T07:59:00.000Z', statusCode: null,
+            upstream: 'primary', model: null,
+            ttftMs: null, requestHeaders: null, responseHeaders: null
+        }
+    ];
+    const page = createPageHarness(({ url }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/usage') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: { days: [], alert: { dailyTokens: 0, level: 'none', exceeded: false, ratio: 0 } }
+            });
+        }
+        if (url === '/api/settings') {
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: false, level: 'standard' }
+                }
+            });
+        }
+        if (url === '/api/upstream-health') {
+            return pageJsonResponse(200, { ok: true, data: { upstreams: [], failovers: [] } });
+        }
+        if (url === '/api/recent-requests') {
+            return pageJsonResponse(200, { ok: true, data: { updatedAt: null, entries } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        throw new Error(`unexpected request: ${url}`);
+    });
+    await flushPageMicrotasks();
+
+    const board = page.elements.recentRequestsBoard;
+    // 表头：六列；最新在前（entry[0] 为首条数据行）。
+    const table = board.options.find((el) => el.className === 'usage-table');
+    assert.ok(table);
+    assert.deepEqual(
+        table.options[0].options.map((th) => th.textContent),
+        ['时间', '状态', '上游', '模型', 'TTFT', '标记']
+    );
+    const first = table.options[1];
+    assert.equal(first.options.length, 6);
+    // 倒序展示：entries.reverse() 后首条数据行为原数组末项（07:59 失败请求）。
+    assert.equal(first.options[0].textContent, '10-15 15:59:00');
+    assert.equal(first.options[1].textContent, '失败');
+    assert.equal(first.options[2].textContent, 'primary');
+    assert.equal(first.options[3].textContent, '');
+    assert.equal(first.options[4].textContent, 'n/a');
+    assert.equal(first.options[5].textContent, '');
+    // 第二行：成功请求，含 💭/⇄ 标记。
+    const second = table.options[2];
+    assert.equal(second.options[1].textContent, '200');
+    assert.equal(second.options[3].textContent, 'claude-sonnet-5');
+    assert.equal(second.options[4].textContent, '850ms');
+    assert.equal(second.options[5].textContent, '💭 ⇄');
+
+    // 点击展开详情行：textContent 展示脱敏头 JSON；再次点击收起（remove）。
+    await second.dispatch('click');
+    // after() 把详情行插到 second.options（mock 无真实兄弟链），而非 table。
+    const detail = second.options[6];
+    assert.equal(detail.className, 'request-detail');
+    assert.match(String(detail.options[0].textContent), /请求头 /);
+    assert.match(String(detail.options[0].textContent), /content-type/);
+    // 模拟 DOM 兄弟链：row.nextSibling → 详情行，第二次点击走 remove 分支。
+    second.nextSibling = detail;
+    await second.dispatch('click');
+    assert.equal(detail.removed, true);
 });
 
 test('API: /api/usage rejects invalid token and non-GET', async (t) => {

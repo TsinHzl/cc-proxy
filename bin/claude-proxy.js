@@ -12,6 +12,7 @@ import { createProxyServer } from '../src/proxy.js';
 import { createUsageStore, importJsonHistory } from '../src/usage-store.js';
 import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
 import { createUpstreamHealthTracker } from '../src/upstream-health.js';
+import { createRequestLogTracker } from '../src/request-log.js';
 import { cacheHitRate } from '../src/pricing.js';
 import { readConfig } from '../src/settings.js';
 import { createSystemPromptCapture, capturedSystemPromptPath } from '../src/system-prompt.js';
@@ -84,6 +85,9 @@ export async function main({
     // 上游健康统计（被动埋点）：防抖落盘 ~/.cc-proxy/runtime/upstream-health.json，
     // 供设置页 /api/upstream-health 只读展示。
     const upstreamHealth = createUpstreamHealthTracker();
+    // 最近请求日志（被动埋点）：环形缓冲 200 条 + 防抖落盘
+    // ~/.cc-proxy/runtime/recent-requests.json，供设置页只读展示。
+    const requestLogTracker = createRequestLogTracker();
     const settings = readSettings();
     const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = settings;
     // 当日用量告警：仅当 config 配置了 alerts.dailyTokens（> 0）且当日累计
@@ -102,6 +106,7 @@ export async function main({
         usageTracker,
         latencyTracker,
         upstreamHealth,
+        requestLog: requestLogTracker,
         forwardSuggestionMode,
         thinkingAsText,
         effortOverride,
@@ -146,6 +151,7 @@ export async function main({
             }
             // 进程退出同步 flush 最终健康快照（绕过防抖定时器）。
             upstreamHealth.flushNow();
+            requestLogTracker.flushNow();
             server.close();
             if (signal) process.kill(process.pid, signal);
             process.exit(code ?? 0);

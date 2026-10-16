@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
     formatDurationLine,
     formatThinkingAsText,
@@ -11,6 +14,7 @@ import {
     MAX_THINKING_TEXT_RESPONSE_BYTES
 } from '../src/thinking-text.js';
 import { createProxyServer } from '../src/proxy.js';
+import { createRequestLogTracker } from '../src/request-log.js';
 import { resolveUpstream } from '../src/upstream.js';
 
 const ANSI_DIM = '\x1b[2m';
@@ -366,6 +370,54 @@ function startMockUpstream(events) {
 }
 
 // ---------- 集成：代理端到端（mock 上游 SSE，含跨 chunk 缓冲） ----------
+
+// 埋点链路 e2e：thinking 块经 transform 吞掉改写后，原始 content_block_start
+// 不会出现在输出流中，thinkingRewritten 必须由 onThinkingSeen 回调上报才为 true。
+test('proxy e2e: request log flags thinkingRewritten via onThinkingSeen', async () => {
+    const upstreamEvents = [
+        ev('message_start', { message: { model: 'claude-sonnet-5' } }),
+        ev('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
+        ev('content_block_delta', { index: 0, delta: { type: 'thinking_delta', thinking: 'deep thought' } }),
+        ev('content_block_stop', { index: 0 }),
+        ev('content_block_start', { index: 1, content_block: { type: 'text', text: '' } }),
+        ev('content_block_delta', { index: 1, delta: { type: 'text_delta', text: 'answer' } }),
+        ev('content_block_stop', { index: 1 }),
+        ev('message_stop')
+    ];
+    const upstream = await startMockUpstream(upstreamEvents);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-thinking-flag-'));
+    const logFile = path.join(home, 'recent-requests.json');
+    const requestLog = createRequestLogTracker({ file: logFile, debounceMs: 0 });
+    const proxy = createProxyServer({
+        baseUrlEnv: `http://127.0.0.1:${upstream.address().port}`,
+        requestLog
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST',
+            headers: { 'user-agent': 'claude-cli/2.1.231', 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] })
+        });
+        assert.equal(res.status, 200);
+        const raw = await res.text();
+        // 输出流中原始 thinking content_block_start 已被吞掉，仅剩惰性 text 块。
+        assert.ok(raw.includes('"content_block":{"type":"text"'), 'text block emitted');
+        assert.ok(!raw.includes('"content_block":{"type":"thinking"}'), 'thinking start swallowed');
+        requestLog.flushNow();
+        const snapshot = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+        assert.equal(snapshot.entries.length, 1);
+        assert.equal(snapshot.entries[0].thinkingRewritten, true);
+        assert.equal(snapshot.entries[0].failedOver, false);
+        assert.equal(snapshot.entries[0].model, 'claude-sonnet-5');
+        assert.ok(Number.isFinite(snapshot.entries[0].ttftMs) && snapshot.entries[0].ttftMs >= 0);
+    } finally {
+        proxy.close();
+        upstream.close();
+        fs.rmSync(home, { recursive: true, force: true });
+    }
+});
 
 // 真实网关形态：thinking 块中途夹发 ping，且 thinking 块无 thinking_delta
 // 只有 signature_delta（gpt 系模型经网关转 Anthropic 协议的典型序列）。
