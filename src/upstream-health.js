@@ -26,6 +26,7 @@ function percentile(values, p) {
 export function createUpstreamHealthTracker({
     file = defaultHealthPath(),
     debounceMs = FLUSH_DEBOUNCE_MS,
+    breaker = null,
     now = () => new Date()
 } = {}) {
     // id → { requests, failures, ttfts: [] }；id 用上游 host（官方 API 为
@@ -87,18 +88,23 @@ export function createUpstreamHealthTracker({
     };
 
     // 快照：纯对象结构，settings-web 只读落盘文件，进程退出 flush 同一结构。
-    const getHealthSnapshot = () => ({
-        updatedAt: now().toISOString(),
-        upstreams: [...upstreams.entries()].map(([id, e]) => ({
-            id,
-            requests: e.requests,
-            failures: e.failures,
-            ttftP50: percentile(e.ttfts, 0.5),
-            ttftP95: percentile(e.ttfts, 0.95),
-            samples: e.ttfts.length
-        })),
-        failovers: [...failovers]
-    });
+    const getHealthSnapshot = () => {
+        // breaker 快照取一次（内部遍历全部条目），避免 map 回调内逐条重复计算。
+        const breakerSnap = breaker?.getSnapshot() ?? null;
+        return {
+            updatedAt: now().toISOString(),
+            upstreams: [...upstreams.entries()].map(([id, e]) => ({
+                id,
+                requests: e.requests,
+                failures: e.failures,
+                ttftP50: percentile(e.ttfts, 0.5),
+                ttftP95: percentile(e.ttfts, 0.95),
+                samples: e.ttfts.length,
+                breaker: breakerSnap?.[id] ?? { ...CLOSED_BREAKER }
+            })),
+            failovers: [...failovers]
+        };
+    };
 
     // 原子落盘：同目录临时文件（mode 0600）+ rename 替换；失败静默（纯观测数据，
     // 不阻塞代理流量），与 usage 落盘容错策略一致。
@@ -138,6 +144,7 @@ export function createUpstreamHealthTracker({
 }
 
 // 读落盘快照（settings-web 用）：缺失/损坏/结构非法 → 空快照，绝不抛出。
+// breaker 字段缺失或非法（旧版本快照、部分条目缺字段）→ 按 closed 容错补齐。
 export function readHealthSnapshot(file = defaultHealthPath()) {
     const empty = { updatedAt: null, upstreams: [], failovers: [] };
     try {
@@ -146,6 +153,10 @@ export function readHealthSnapshot(file = defaultHealthPath()) {
         const upstreams = Array.isArray(raw.upstreams)
             ? raw.upstreams.filter((u) => u && typeof u === 'object' && !Array.isArray(u)
                 && typeof u.id === 'string' && u.id)
+                .map((u) => ({
+                    ...u,
+                    breaker: normalizeBreakerField(u.breaker)
+                }))
             : [];
         const failovers = Array.isArray(raw.failovers)
             ? raw.failovers.filter((f) => f && typeof f === 'object' && !Array.isArray(f))
@@ -154,4 +165,20 @@ export function readHealthSnapshot(file = defaultHealthPath()) {
     } catch {
         return empty;
     }
+}
+
+const CLOSED_BREAKER = Object.freeze({ state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 });
+
+function normalizeBreakerField(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || (value.state !== 'closed' && value.state !== 'open' && value.state !== 'half-open')) {
+        return { ...CLOSED_BREAKER };
+    }
+    return {
+        state: value.state,
+        consecutiveFailures: Number.isFinite(value.consecutiveFailures) && value.consecutiveFailures >= 0
+            ? value.consecutiveFailures : 0,
+        cooldownRemainingMs: Number.isFinite(value.cooldownRemainingMs) && value.cooldownRemainingMs >= 0
+            ? value.cooldownRemainingMs : 0
+    };
 }

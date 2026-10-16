@@ -4,11 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import {
-    createUpstreamHealthTracker,
-    readHealthSnapshot,
-    defaultHealthPath
-} from '../src/upstream-health.js';
+import { createUpstreamHealthTracker, readHealthSnapshot, defaultHealthPath } from '../src/upstream-health.js';
+import { createUpstreamBreaker } from '../src/upstream-breaker.js';
 import { createProxyServer } from '../src/proxy.js';
 
 function tmpDir(t) {
@@ -110,6 +107,67 @@ test('recordFailure: adds failure without double-counting requests', () => {
     const snap = t.getHealthSnapshot();
     assert.equal(snap.upstreams[0].requests, 1);
     assert.equal(snap.upstreams[0].failures, 2);
+});
+
+// ---------- breaker 集成与快照容错 ----------
+
+test('breaker injected: snapshot upstreams entries carry breaker fields', () => {
+    const clock = { t: 0 };
+    const breaker = createUpstreamBreaker({ now: () => clock.t, cooldownMs: 30000 });
+    for (let i = 0; i < 3; i++) breaker.recordFailure('api.example.com'); // open
+    clock.t = 1000;
+    const t = createUpstreamHealthTracker({
+        file: path.join('/dev/null', 'unused'),
+        breaker,
+        now: () => new Date(1700000000000 + clock.t)
+    });
+    t.recordRequest('api.example.com', { ok: true, ttftMs: 20 });
+    const [entry] = t.getHealthSnapshot().upstreams;
+    assert.deepEqual(entry.breaker, {
+        state: 'open',
+        consecutiveFailures: 3,
+        cooldownRemainingMs: 29000
+    });
+    // 无 breaker 注入时（默认 null）字段回退 closed。
+    const plain = createUpstreamHealthTracker({ file: path.join('/dev/null', 'unused') });
+    plain.recordRequest('up', { ok: true });
+    assert.deepEqual(plain.getHealthSnapshot().upstreams[0].breaker,
+        { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 });
+});
+
+test('readHealthSnapshot: missing/invalid breaker field tolerates as closed (old snapshot compat)', (t) => {
+    const dir = tmpDir(t);
+    const file = path.join(dir, 'health.json');
+    // 旧版本快照：无 breaker 字段。
+    fs.writeFileSync(file, JSON.stringify({
+        updatedAt: '2026-10-16T00:00:00.000Z',
+        upstreams: [{ id: 'a', requests: 3, failures: 1, ttftP50: 10, ttftP95: 20, samples: 2 }],
+        failovers: []
+    }));
+    const snap = readHealthSnapshot(file);
+    assert.deepEqual(snap.upstreams[0].breaker,
+        { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 });
+    // 非法 breaker 字段：未知 state / 非对象 / 非法数值 → 容错为 closed。
+    fs.writeFileSync(file, JSON.stringify({
+        upstreams: [
+            { id: 'a', breaker: { state: 'bogus' } },
+            { id: 'b', breaker: 'x' },
+            { id: 'c', breaker: { state: 'open', consecutiveFailures: -1, cooldownRemainingMs: 'bad' } }
+        ],
+        failovers: []
+    }));
+    const snap2 = readHealthSnapshot(file);
+    assert.deepEqual(snap2.upstreams[0].breaker, { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 });
+    assert.deepEqual(snap2.upstreams[1].breaker, { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 });
+    // state 合法但数值字段非法 → state 保留、数值归 0。
+    assert.deepEqual(snap2.upstreams[2].breaker, { state: 'open', consecutiveFailures: 0, cooldownRemainingMs: 0 });
+    // 合法 breaker 字段原样透传。
+    fs.writeFileSync(file, JSON.stringify({
+        upstreams: [{ id: 'd', breaker: { state: 'half-open', consecutiveFailures: 3, cooldownRemainingMs: 0 } }],
+        failovers: []
+    }));
+    assert.deepEqual(readHealthSnapshot(file).upstreams[0].breaker,
+        { state: 'half-open', consecutiveFailures: 3, cooldownRemainingMs: 0 });
 });
 
 // ---------- 落盘与读回 ----------

@@ -1844,7 +1844,8 @@ test('API: GET /api/upstream-health returns snapshot, empty fallback and 405', a
         upstreams: [{
             id: 'api.anthropic.com',
             requests: 4, failures: 1,
-            ttftP50: 120, ttftP95: 480, samples: 3
+            ttftP50: 120, ttftP95: 480, samples: 3,
+            breaker: { state: 'closed', consecutiveFailures: 0, cooldownRemainingMs: 0 }
         }],
         failovers: [{ time: '2026-10-15T08:00:00.000Z', from: 'a', to: 'b', reason: 'HTTP 429' }]
     };
