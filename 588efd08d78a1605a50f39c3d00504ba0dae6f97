@@ -1,0 +1,27 @@
+test/upstream-health.test.mjs
+  727a034631d893bc 7-8,112-172
+test/settings-web.test.mjs
+  727a034631d893bc 1847-1848
+src/upstream-health.js
+  727a034631d893bc 29,91-107,147,156-159,169-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "588efd08d78a1605a50f39c3d00504ba0dae6f97",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 106,
+      "total_deletions": 20,
+      "accepted_lines": 104,
+      "overriden_lines": 0
+    }
+  }
+}
