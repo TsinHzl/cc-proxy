@@ -12,6 +12,7 @@ import { createProxyServer } from '../src/proxy.js';
 import { createUsageStore, importJsonHistory } from '../src/usage-store.js';
 import { createLatencyTracker, formatLatencySummary } from '../src/latency.js';
 import { createUpstreamHealthTracker } from '../src/upstream-health.js';
+import { createUpstreamBreaker } from '../src/upstream-breaker.js';
 import { createRequestLogTracker } from '../src/request-log.js';
 import { cacheHitRate } from '../src/pricing.js';
 import { readConfig } from '../src/settings.js';
@@ -85,7 +86,11 @@ export async function main({
     const latencyTracker = createLatency();
     // 上游健康统计（被动埋点）：防抖落盘 ~/.cc-proxy/runtime/upstream-health.json，
     // 供设置页 /api/upstream-health 只读展示。
-    const upstreamHealth = createUpstreamHealthTracker();
+    // 熔断器：连续 3 次失败熔断、30s 冷却后半开探测；无备用上游时
+    // createProxyServer 内部不创建（零开销）。与 health tracker 共享实例，
+    // 快照落盘时附带 breaker 状态供设置页展示。
+    const upstreamBreaker = createUpstreamBreaker();
+    const upstreamHealth = createUpstreamHealthTracker({ breaker: upstreamBreaker });
     // 最近请求日志（被动埋点）：环形缓冲 200 条 + 防抖落盘
     // ~/.cc-proxy/runtime/recent-requests.json，供设置页只读展示。
     const requestLogTracker = createRequestLogTracker();
@@ -107,6 +112,7 @@ export async function main({
         usageTracker,
         latencyTracker,
         upstreamHealth,
+        upstreamBreaker,
         requestLog: requestLogTracker,
         forwardSuggestionMode,
         thinkingAsText,

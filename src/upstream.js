@@ -28,7 +28,9 @@ export function resolveUpstream(pathWithQuery, baseUrlEnv) {
 const RETRYABLE_STATUS = new Set([502, 503, 529]);
 // 故障转移状态：在同上游重试耗尽后触发切换，额外覆盖限流（429）与 500，
 // 独立于 RETRYABLE_STATUS（同上游重试仍只针对 502/503/529）。
-const FAILOVER_STATUS = new Set([429, 500, 502, 503, 529]);
+// 导出供 proxy.js 埋点侧区分「触发故障转移的状态码」（熔断记败）与
+// 「普通可达响应」（熔断记成功）。
+export const FAILOVER_STATUS = new Set([429, 500, 502, 503, 529]);
 const RETRY_DELAYS_MS = [1000, 2000, 4000];
 
 // 兼容两种 targets 元素形态：裸 target 对象（须含 host）→ { target }；
@@ -57,9 +59,12 @@ function toEntry(item) {
  *     request; a bare target object is accepted for the single-upstream case
  * @param {(upstreamRes: http.IncomingMessage) => void} respond
  * @param {(err: Error) => void} onError
- * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string) => void}} [options]
+ * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string) => void, onProbe?: (upstreamName: string) => void}} [options]
+ *     `onProbe`：某上游失败且请求即将切换到下一上游时上报（供熔断器记败）。
+ *     末位上游的最终失败响应不经此上报——会原样交给 respond，由 proxy 按
+ *     状态码归类，避免同一尝试重复计数。
  */
-export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onError, { isClientGone = () => false, onFailover = null } = {}) {
+export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onError, { isClientGone = () => false, onFailover = null, onProbe = null } = {}) {
     const entries = (Array.isArray(targets) ? targets : [targets]).map(toEntry).filter(Boolean);
     const labelOf = (entry) => entry.name || entry.target.host;
 
@@ -73,6 +78,9 @@ export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onErr
             if (entryIdx + 1 >= entries.length) return false;
             const next = entries[entryIdx + 1];
             logger.warn(`[cc-proxy] upstream ${labelOf(entry)} failed (${reason}), failing over to ${labelOf(next)}`);
+            // 切换即视为当前上游本次尝试失败：先于 onFailover 上报（供熔断
+            // 器记败），再通知埋点侧切换统计归属。
+            if (onProbe) onProbe(labelOf(entry));
             if (onFailover) onFailover(labelOf(entry), labelOf(next), reason);
             attempt(entryIdx + 1, RETRY_DELAYS_MS.length);
             return true;
@@ -104,7 +112,8 @@ export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onErr
                 setTimeout(() => attempt(entryIdx, triesLeft - 1), delay);
                 return;
             }
-            if (!switchToNext(err.message)) onError(err);
+            // 连接级错误耗尽重试后：要么切换（记当前上游失败），要么最终失败。
+            if (!switchToNext(err.message)) { if (onProbe) onProbe(labelOf(entry)); onError(err); }
         }, entry.headers);
     };
     attempt(0, RETRY_DELAYS_MS.length);

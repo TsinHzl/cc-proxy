@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { forwardRequestWithRetry, resolveUpstream } from './upstream.js';
+import { forwardRequestWithRetry, resolveUpstream, FAILOVER_STATUS } from './upstream.js';
 import { logger } from './logger.js';
 import {
     isClaudeCodeUserAgent,
@@ -12,6 +12,7 @@ import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
 import { buildOverriddenSystem } from './system-prompt.js';
 import { createLatencyTracker } from './latency.js';
+import { createUpstreamBreaker } from './upstream-breaker.js';
 
 function parseEvent(raw) {
     const lines = raw.split('\n');
@@ -165,7 +166,8 @@ export function createProxyServer({
     systemPromptCapture = null,
     upstreamHealth = null,
     failoverUpstreams = [],
-    requestLog = null
+    requestLog = null,
+    upstreamBreaker = null
 } = {}) {
     // 备用上游启动时解析一次并固定（不热加载）：baseUrl 复用主上游的
     // resolveUpstream 语义取 base 路径前缀，请求侧再拼接实际 path；
@@ -190,6 +192,9 @@ export function createProxyServer({
         .filter(Boolean);
 
     const usage = usageTracker ?? null;
+    // 熔断器：未注入时创建默认实例（3 连败 / 30s 冷却）；无备用上游时不创建，
+    // 选路层零开销（单上游无熔断意义，保持透传路径最简）。
+    const breaker = upstreamBreaker ?? (failoverBases.length ? createUpstreamBreaker() : null);
     // 关闭态 debug-log 的方法为 null，归一为可调用的空实现，调用点无需判空。
     const rawDbg = debugLog ?? createDebugLog(); // 默认关闭：零开销空实现
     const dbg = {
@@ -197,22 +202,90 @@ export function createProxyServer({
         recordEvent: rawDbg.recordEvent ?? (() => {}),
         requestEnd: rawDbg.requestEnd ?? (() => {})
     };
+    // 健康分排序（design D6）：成功率降序为主键；成功率持平（差 <0.01）比
+    // TTFT p50 升序；双方均无 TTFT 样本时保持配置原序（稳定排序）。样本不足
+    // （requests < 3 或 requests === 0）的上游视为最差、不参与排序优化，按
+    // 原序兜底——避免少量样本误导选路。成功率为 1 - failures / requests。
+    const MIN_RANKING_SAMPLES = 3;
+    const SUCCESS_RATE_EPSILON = 0.01;
+    const rankBackups = (entries, healthById) => {
+        const labelOf = (e) => e.name || e.target.host;
+        const eligible = (e) => {
+            const h = healthById.get(labelOf(e));
+            return h && h.requests >= MIN_RANKING_SAMPLES;
+        };
+        const scored = entries.filter(eligible).map((e) => {
+            const h = healthById.get(labelOf(e));
+            return { e, successRate: h.requests ? 1 - h.failures / h.requests : 0, ttftP50: h.ttftP50 };
+        });
+        scored.sort((a, b) => {
+            if (Math.abs(a.successRate - b.successRate) >= SUCCESS_RATE_EPSILON) {
+                return b.successRate - a.successRate;
+            }
+            if (a.ttftP50 !== null && b.ttftP50 !== null && a.ttftP50 !== b.ttftP50) {
+                return a.ttftP50 - b.ttftP50;
+            }
+            return 0; // 均无 TTFT 样本或持平：保持原序（Array.sort 稳定）
+        });
+        const ranked = scored.map((s) => s.e);
+        const rest = entries.filter((e) => !eligible(e));
+        return [...ranked, ...rest];
+    };
+
+    // 每请求选路（design D2/D5）：构造 targets 前经 breaker 过滤与健康分排序。
+    // - 主上游非 open：targets 仍以主上游开头（probe 同时驱动 half-open 迁移）。
+    // - 主上游 open：备用按健康分排序，取首个非 open 上游为首选。
+    // - 全部 open：忽略熔断按原顺序尝试全部（熔断不是最终否决）。
+    // 无 breaker（单上游或未启用）时走原顺序，零行为变化。
+    const buildTargets = (req, target) => {
+        const primaries = [{ target, headers: undefined, name: undefined }];
+        const backups = failoverBases.map((f) => ({
+            target: { protocol: f.base.protocol, host: f.base.host,
+                port: f.base.port, path: `${f.basePath}${req.url}` },
+            headers: f.headers,
+            name: f.name
+        }));
+        if (!breaker || !backups.length) return [...primaries, ...backups];
+
+        const labelOf = (e) => e.name || e.target.host;
+        const primaryLabel = labelOf(primaries[0]);
+        const healthById = new Map(
+            (upstreamHealth?.getHealthSnapshot()?.upstreams ?? []).map((u) => [u.id, u])
+        );
+
+        const primaryOpen = breaker.isOpen(primaryLabel);
+        let ordered;
+        if (!primaryOpen) {
+            ordered = [primaries[0], ...rankBackups(backups, healthById)];
+        } else {
+            const ranked = rankBackups(backups, healthById);
+            ordered = [...ranked, primaries[0]];
+        }
+        const openLabels = new Set(
+            ordered.filter((e) => breaker.isOpen(labelOf(e))).map(labelOf)
+        );
+        const allowed = ordered.filter((e) => !openLabels.has(labelOf(e)));
+        // 全部 open（或全被过滤）：忽略熔断按原顺序尝试全部（兜底）。
+        if (!allowed.length) return ordered;
+        // 首选若为 half-open 侯选（冷却已过），本请求即探测请求，须先经
+        // probe() 占用名额；probe 拒绝（并发探测占用）时跳过该上游。
+        const head = allowed[0];
+        const headLabel = labelOf(head);
+        if (!primaryOpen && headLabel === primaryLabel) return allowed; // 主上游 closed 快路径
+        const verdict = breaker.probe(headLabel);
+        if (verdict.allowed) return allowed;
+        return allowed.slice(1).length ? allowed.slice(1) : ordered;
+    };
+
     return http.createServer((req, res) => {
         const chunks = [];
         req.on('data', (c) => chunks.push(c));
         req.on('end', () => {
             const bodyBuffer = Buffer.concat(chunks);
             const target = resolveUpstream(req.url, baseUrlEnv);
-            // targets 列表：首项主上游，其后为备用上游（同 path 拼接、各自 headers）。
-            const targets = [
-                target,
-                ...failoverBases.map((f) => ({
-                    target: { protocol: f.base.protocol, host: f.base.host,
-                        port: f.base.port, path: `${f.basePath}${req.url}` },
-                    headers: f.headers,
-                    name: f.name
-                }))
-            ];
+            // targets 列表：经 breaker 过滤与健康分排序后的有序上游
+            // （首项为首选上游，详见 buildTargets）。
+            const targets = buildTargets(req, target);
 
             const isClaudeCode = isClaudeCodeUserAgent(req.headers['user-agent']);
             const requestStartedAt = new Date();
@@ -286,16 +359,24 @@ export function createProxyServer({
             // 上游健康埋点：activeUpstreamId 跟随故障转移切换（onFailover 更新），
             // 响应头到达 / 失败回调据此归属统计。
             let activeUpstreamId = target.host;
+            // 熔断器同请求内去重：同一上游的多次重试失败只记一次（连续失败
+            // 计数按「请求」为单位，不按重试尝试次数）。
+            const probedThisRequest = new Set();
             const recordUpstreamHealth = (ok, ttftMs = null, { connectionLevel = false } = {}) => {
-                if (!upstreamHealth) return;
                 if (ok) {
-                    upstreamHealth.recordRequest(activeUpstreamId, { ok: true, ttftMs });
+                    // 成功即清零该上游熔断计数（half-open 探测成功 → closed）。
+                    breaker?.recordSuccess(activeUpstreamId);
+                    upstreamHealth?.recordRequest(activeUpstreamId, { ok: true, ttftMs });
                 } else {
                     // 流中失败（connectionLevel=false）：请求已由响应头到达时的
                     // 成功样本计数，仅补记 failures，避免分母重复计数。
                     // 连接级失败（未收到响应头，recordRequest 未被调用）需补计
                     // 分母，否则 failures > requests 会令成功率为负。
-                    upstreamHealth.recordFailure(activeUpstreamId, { countRequest: connectionLevel });
+                    if (!probedThisRequest.has(activeUpstreamId)) {
+                        probedThisRequest.add(activeUpstreamId);
+                        breaker?.recordFailure(activeUpstreamId);
+                    }
+                    upstreamHealth?.recordFailure(activeUpstreamId, { countRequest: connectionLevel });
                 }
             };
             const recordLatency = (status) => {
@@ -327,10 +408,22 @@ export function createProxyServer({
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
                 const logStream = dbg.requestStart(req, bodyBuffer);
+                // 熔断记败（onProbe）：触发了故障转移的状态码（429/5xx）视为
+                // 该上游失败；未触发转移的状态码（含 4xx 与最终错误响应）视为
+                // 该上游本身可达（连接面健康），记成功。
+                const statusCodeFails = FAILOVER_STATUS.has(upstreamRes.statusCode);
                 ttfbAt = Date.now();
                 // 响应头到达即记成功样本（含最终返回 4xx/5xx 的上���——该上游
                 // 本身可达，连接面是健康的）。
                 recordUpstreamHealth(true, ttfbAt - requestStartedAt.getTime());
+                // 触发故障转移的状态码（429/5xx）对熔断器记败：主上游连续
+                // 429/5xx 达阈值后熔断（onProbe 已覆盖切换路径，此处覆盖末位
+                // 上游的最终错误响应——该请求无成功交付）。非 FAILOVER 状态码
+                // 视为该上游连接面健康，不记败。
+                if (statusCodeFails && !probedThisRequest.has(activeUpstreamId)) {
+                    probedThisRequest.add(activeUpstreamId);
+                    breaker?.recordFailure(activeUpstreamId);
+                }
 
                 // Non-CC clients: everything verbatim.
                 if (!isClaudeCode) {
@@ -475,6 +568,13 @@ export function createProxyServer({
                     if (!upstreamHealth) return;
                     upstreamHealth.recordFailover(from, to, reason);
                     activeUpstreamId = to;
+                },
+                // 熔断记败：请求从 from 切走（onFailover 前触发）。同一上游同一
+                // 请求内只记一次，防止同上游重试路径多次累加。
+                onProbe: (from) => {
+                    if (probedThisRequest.has(from)) return;
+                    probedThisRequest.add(from);
+                    breaker?.recordFailure(from);
                 }
             });
         });
