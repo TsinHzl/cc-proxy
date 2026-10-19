@@ -29,6 +29,7 @@ src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处
   ├─ src/thinking-text.js     thinking→text 流式改写（核心特性）
   ├─ src/suggestion-mode.js   [SUGGESTION MODE 请求识别与空响应拦截
   ├─ src/usage.js             token 用量提取 → ~/.cc-proxy/usage.json（按天）
+  ├─ src/usage-scale.js       客户端可见 usage 缩放（usageScale 配置；output 不缩放，内部统计真实值）
   ├─ src/usage-store.js       用量存储抽象层（JSON / SQLite 双模式探测 + 历史导入）
   ├─ src/pricing.js           模型单价解析（config 覆盖内置价表，精确→前缀）
   ├─ src/latency.js           会话级延迟统计（TTFT 采样，退出时汇总）

@@ -81,6 +81,21 @@ textarea:hover:not(:disabled) { border-color: var(--accent); }
 textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 textarea:disabled { cursor: wait; opacity: .62; }
 .prompt-block { display: block; padding: 10px 16px 14px; }
+#usageScaleRatio {
+    flex: 0 0 auto;
+    width: 72px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: var(--text);
+    font: inherit;
+}
+#usageScaleRatio:hover:not(:disabled) { border-color: var(--accent); }
+#usageScaleRatio:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#usageScaleRatio:disabled { cursor: wait; opacity: .62; }
+#usageScaleRatio:invalid { border-color: var(--error); }
 .status { min-height: 20px; margin: 8px 4px 0; color: var(--muted); }
 .status.error { color: var(--error); }
 .usage-card { margin-bottom: 12px; }
@@ -177,6 +192,20 @@ const PAGE_BODY = `
                 </label>
             </div>
         </div>
+        <div class="setting">
+            <div class="copy">
+                <h2>用量展示缩放</h2>
+                <p class="description">开启后按比例缩放返回给 Claude Code 的上下文用量（仅影响显示与 auto-compact 时机；内部统计始终为真实值）。</p>
+            </div>
+            <div class="controls">
+                <input id="usageScaleRatio" type="number" max="10" step="any"
+                    aria-label="缩放比例" disabled>
+                <label class="switch" for="usageScaleEnabled">
+                    <input id="usageScaleEnabled" type="checkbox" disabled>
+                    <span class="track" aria-hidden="true"></span>
+                </label>
+            </div>
+        </div>
         <div class="prompt-block">
             <textarea id="systemPromptOverridePrompt" aria-label="自定义系统提示词" disabled spellcheck="false"></textarea>
         </div>
@@ -214,19 +243,21 @@ const PAGE_SCRIPT = `
     // 是否存在进行中的 PATCH 保存。
     let saving = false;
     const status = document.getElementById('status');
-    // 布尔开关字段；effortOverride / systemPromptOverride 为嵌套字段。
+    // 布尔开关字段；effortOverride / systemPromptOverride / usageScale 为嵌套字段。
     const switchFields = [
         'forwardSuggestionMode',
         'thinkingAsText',
         'effortOverrideEnabled',
-        'systemPromptOverrideEnabled'
+        'systemPromptOverrideEnabled',
+        'usageScaleEnabled'
     ];
-    // 所需禁用的全部控件（开关 + 档位/模板下拉 + 提示词输入框）。
+    // 所需禁用的全部控件（开关 + 档位/模板下拉 + 提示词输入框 + 比例输入）。
     const controls = [
         ...switchFields,
         'effortOverrideLevel',
         'systemPromptTemplate',
-        'systemPromptOverridePrompt'
+        'systemPromptOverridePrompt',
+        'usageScaleRatio'
     ];
     // 预置角色：五个高频 AI 角色的完整系统提示词（角色定义 + 行为准则 + 工作流程 + 输出规范 + 会话指引），选择后仅填入输入框，不直接保存。
     const SYSTEM_PROMPT_TEMPLATES = [
@@ -411,13 +442,17 @@ const PAGE_SCRIPT = `
                 ? data.effortOverride?.enabled
                 : key === 'systemPromptOverrideEnabled'
                     ? data.systemPromptOverride?.enabled
-                    : data[key];
+                    : key === 'usageScaleEnabled'
+                        ? data.usageScale?.enabled
+                        : data[key];
             document.getElementById(key).checked = value;
         }
         document.getElementById('effortOverrideLevel').value
             = data.effortOverride?.level ?? 'high';
         document.getElementById('systemPromptOverridePrompt').value
             = data.systemPromptOverride?.prompt ?? '';
+        document.getElementById('usageScaleRatio').value
+            = data.usageScale?.ratio ?? 1;
         // 程序化回填不触发 input 事件：复位模板选中并同步下拉为默认 CC官方。
         selectedTemplate = '';
         syncTemplateSelect();
@@ -434,6 +469,10 @@ const PAGE_SCRIPT = `
             systemPromptOverride: {
                 enabled: data.systemPromptOverride?.enabled,
                 prompt: data.systemPromptOverride?.prompt
+            },
+            usageScale: {
+                enabled: data.usageScale?.enabled,
+                ratio: data.usageScale?.ratio
             }
         };
         applySettings(authoritativeSnapshot);
@@ -519,7 +558,9 @@ const PAGE_SCRIPT = `
                 ? 'effortOverride.enabled'
                 : key === 'systemPromptOverrideEnabled'
                     ? 'systemPromptOverride.enabled'
-                    : key;
+                    : key === 'usageScaleEnabled'
+                        ? 'usageScale.enabled'
+                        : key;
             saving = true;
             setDisabled(true);
             try {
@@ -622,6 +663,34 @@ const PAGE_SCRIPT = `
     document.getElementById('systemPromptOverridePrompt').addEventListener('input', () => {
         selectedTemplate = '';
         syncTemplateSelect();
+    });
+
+    // 用量展示缩放比例输入框：blur 时与权威快照不同则提交 ratio；
+    // 非法值（空 / 非有限数 / 越界）不提交并回滚到快照值。
+    document.getElementById('usageScaleRatio').addEventListener('blur', async (event) => {
+        const input = event.currentTarget;
+        const parsed = Number(input.value);
+        const snapshotRatio = authoritativeSnapshot?.usageScale?.ratio;
+        if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 10) {
+            show('缩放比例须为大于 0 且不超过 10 的数值', true);
+            input.value = snapshotRatio ?? 1;
+            return;
+        }
+        if (parsed === snapshotRatio) return;
+        saving = true;
+        setDisabled(true);
+        try {
+            await patchSetting('usageScale.ratio', parsed);
+            show('设置已保存，将在下次启动会话生效');
+        } catch (error) {
+            if (authoritativeSnapshot) {
+                applySettings(authoritativeSnapshot);
+            }
+            show(error.message, true);
+        } finally {
+            saving = false;
+            setDisabled(!leaseActive);
+        }
     });
 
     // 系统提示词输入框：blur 时与权威快照不同则提交 prompt。

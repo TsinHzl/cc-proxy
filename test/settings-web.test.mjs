@@ -16,12 +16,12 @@ import {
     SESSION_TIMING
 } from '../bin/settings-web.js';
 
-test('page: renders dark settings page with exactly four switches', () => {
+test('page: renders dark settings page with exactly five switches', () => {
     const html = renderSettingsPage();
     const switches = html.match(/<input[^>]+type="checkbox"/g) ?? [];
 
     assert.match(html, /<title>cc-proxy 设置<\/title>/);
-    assert.equal(switches.length, 4);
+    assert.equal(switches.length, 5);
     assert.match(html, /id="forwardSuggestionMode"/);
     assert.match(html, /id="thinkingAsText"/);
     assert.match(html, /id="effortOverrideEnabled"/);
@@ -29,6 +29,8 @@ test('page: renders dark settings page with exactly four switches', () => {
     assert.match(html, /id="systemPromptOverrideEnabled"/);
     assert.match(html, /id="systemPromptTemplate"/);
     assert.match(html, /id="systemPromptOverridePrompt"/);
+    assert.match(html, /id="usageScaleEnabled"/);
+    assert.match(html, /id="usageScaleRatio"/);
     assert.match(html, /<option value="low">/);
     assert.match(html, /<option value="medium">/);
     assert.match(html, /<option value="high">/);
@@ -305,6 +307,16 @@ function createPageHarness(fetchHandler) {
                 )?.[0] ?? ''
             )
         }),
+        usageScaleEnabled: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                inputTag('usageScaleEnabled')
+            )
+        }),
+        usageScaleRatio: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                inputTag('usageScaleRatio')
+            )
+        }),
         status: createPageElement(),
         usageBoard: createPageElement(),
         healthBoard: createPageElement(),
@@ -508,7 +520,8 @@ test('page script: template select resets to CC官方 on input and applySettings
                     forwardSuggestionMode: false,
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'high' },
-                    systemPromptOverride: { enabled: false, prompt: '' }
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                        usageScale: { enabled: false, ratio: 1 }
                 }
             });
         }
@@ -787,7 +800,8 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     forwardSuggestionMode: false,
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
-                    systemPromptOverride: { enabled: false, prompt: '' }
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                        usageScale: { enabled: false, ratio: 1 }
                 }
             });
         });
@@ -821,7 +835,8 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     forwardSuggestionMode: false,
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
-                    systemPromptOverride: { enabled: false, prompt: '' }
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                        usageScale: { enabled: false, ratio: 1 }
                 }
             });
         });
@@ -848,7 +863,8 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     forwardSuggestionMode: false,
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
-                    systemPromptOverride: { enabled: false, prompt: '' }
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                        usageScale: { enabled: false, ratio: 1 }
                 }
             });
         });
@@ -882,7 +898,8 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     forwardSuggestionMode: false,
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
-                    systemPromptOverride: { enabled: false, prompt: '' }
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                        usageScale: { enabled: false, ratio: 1 }
                 }
             });
         });
@@ -1370,7 +1387,8 @@ test(
             forwardSuggestionMode: false,
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
-            systemPromptOverride: { enabled: false, prompt: '' }
+            systemPromptOverride: { enabled: false, prompt: '' },
+            usageScale: { enabled: false, ratio: 1 }
         });
 
         const updated = await fetch(`${origin}/api/settings`, {
@@ -1390,7 +1408,8 @@ test(
             forwardSuggestionMode: true,
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
-            systemPromptOverride: { enabled: false, prompt: '' }
+            systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1 }
         });
 
         const configFile = path.join(envDir, 'config.json');
@@ -1402,6 +1421,7 @@ test(
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: false, ratio: 1 },
                 alerts: { dailyTokens: 0, dailyCost: 0 },
                 usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
                 models: {},
@@ -1740,7 +1760,8 @@ test('API: PATCH systemPromptOverride writes prompt and enabled', async (t) => {
         read: () => ({
             forwardSuggestionMode: false,
             thinkingAsText: true,
-            systemPromptOverride: { enabled: false, prompt: '' }
+            systemPromptOverride: { enabled: false, prompt: '' },
+            usageScale: { enabled: false, ratio: 1 }
         }),
         write: (partial) => {
             update = partial;
@@ -1780,7 +1801,8 @@ test('API: rejects invalid systemPromptOverride patches without writes', async (
         read: () => ({
             forwardSuggestionMode: false,
             thinkingAsText: true,
-            systemPromptOverride: { enabled: false, prompt: '' }
+            systemPromptOverride: { enabled: false, prompt: '' },
+            usageScale: { enabled: false, ratio: 1 }
         }),
         write: () => { writes += 1; }
     });
@@ -1804,6 +1826,70 @@ test('API: rejects invalid systemPromptOverride patches without writes', async (
         assert.equal(response.status, 400, body);
     }
     assert.equal(writes, 0);
+});
+
+test('API: PATCH usageScale writes enabled and ratio, invalid ratio rejected', async (t) => {
+    let update = null;
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' },
+            systemPromptOverride: { enabled: false, prompt: '' },
+            usageScale: { enabled: false, ratio: 1 }
+        }),
+        write: (partial) => {
+            update = partial;
+            writes += 1;
+            return {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: true, ratio: 0.5 }
+            };
+        }
+    });
+    t.after(api.close);
+
+    const ratioPatch = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'usageScale.ratio', value: 0.5 })
+    });
+    assert.equal(ratioPatch.status, 200);
+    assert.deepEqual(update, { usageScale: { ratio: 0.5 } });
+    assert.deepEqual((await ratioPatch.json()).data.usageScale, { enabled: true, ratio: 0.5 });
+
+    const enabledPatch = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'usageScale.enabled', value: true })
+    });
+    assert.equal(enabledPatch.status, 200);
+    assert.deepEqual(update, { usageScale: { enabled: true } });
+
+    const writesBefore = writes;
+    for (const body of [
+        // ratio 非法：0 / 负数 / 越界 >10 / NaN / 非数值 / 布尔。
+        JSON.stringify({ key: 'usageScale.ratio', value: 0 }),
+        JSON.stringify({ key: 'usageScale.ratio', value: -0.5 }),
+        JSON.stringify({ key: 'usageScale.ratio', value: 10.1 }),
+        JSON.stringify({ key: 'usageScale.ratio', value: NaN }),
+        JSON.stringify({ key: 'usageScale.ratio', value: '0.5' }),
+        JSON.stringify({ key: 'usageScale.ratio', value: true }),
+        // enabled 非布尔。
+        JSON.stringify({ key: 'usageScale.enabled', value: 1 })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, writesBefore);
 });
 
 test('API: GET captured-system-prompt returns captured text or null', async (t) => {

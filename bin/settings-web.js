@@ -31,7 +31,9 @@ const ALLOWED_KEYS = new Set([
     'effortOverride.enabled',
     'effortOverride.level',
     'systemPromptOverride.enabled',
-    'systemPromptOverride.prompt'
+    'systemPromptOverride.prompt',
+    'usageScale.enabled',
+    'usageScale.ratio'
 ]);
 // effort 档位枚举单点定义（与 src/settings.js 的 EFFORT_LEVELS 保持一致）。
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
@@ -66,7 +68,8 @@ function publicSettings(config) {
         forwardSuggestionMode: config.forwardSuggestionMode,
         thinkingAsText: config.thinkingAsText,
         effortOverride: config.effortOverride,
-        systemPromptOverride: config.systemPromptOverride
+        systemPromptOverride: config.systemPromptOverride,
+        usageScale: config.usageScale
     };
 }
 
@@ -316,6 +319,11 @@ function isValidSettingsPatch(body) {
     if (body.key === 'systemPromptOverride.prompt') {
         return typeof body.value === 'string'
             && Buffer.byteLength(body.value, 'utf8') <= MAX_PROMPT_BYTES;
+    }
+    if (body.key === 'usageScale.ratio') {
+        // 与 settings.js normalizeConfig 同口径：有限数 (0, 10]。
+        return typeof body.value === 'number' && Number.isFinite(body.value)
+            && body.value > 0 && body.value <= 10;
     }
     return typeof body.value === 'boolean';
 }

@@ -11,6 +11,7 @@ const EXPECTED_DEFAULT_CONFIG = {
     thinkingAsText: true,
     effortOverride: { enabled: true, level: 'high' },
     systemPromptOverride: { enabled: false, prompt: '' },
+    usageScale: { enabled: false, ratio: 1.0 },
     alerts: { dailyTokens: 0, dailyCost: 0 },
     usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
     models: {},
@@ -75,6 +76,7 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'high' },
         systemPromptOverride: { enabled: false, prompt: '' },
+        usageScale: { enabled: false, ratio: 1 },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -241,10 +243,81 @@ test('writeConfig: systemPromptOverride write keeps other top-level settings', (
     const dir = tmpDir(t);
     writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
     const out = writeConfig({ systemPromptOverride: { prompt: 'x' } }, dir);
-    // 防丢失：写 systemPromptOverride 不得重置已保存的顶层开关。
+    // 防丢失：��� systemPromptOverride 不得重置已保存的顶层开关。
     assert.equal(out.forwardSuggestionMode, true);
     assert.equal(out.thinkingAsText, false);
     assert.deepEqual(out.systemPromptOverride, { enabled: false, prompt: 'x' });
+});
+
+// ---------- usageScale ----------
+
+test('readConfig: old config without usageScale defaults it to disabled/ratio 1', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        thinkingWindow: { enabled: true, lines: 25 }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: false, ratio: 1 });
+});
+
+test('readConfig: explicit usageScale values persist (incl. ratio > 1)', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.6657 }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 0.6657 });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 2.5 }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 2.5 });
+    // 上界 10 为合法闭区间端点。
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 10 }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 10 });
+});
+
+test('readConfig: invalid usageScale fields fall back field-by-field', (t) => {
+    const dir = tmpDir(t);
+    for (const enabled of [null, 0, 1, 'true', []]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            usageScale: { enabled, ratio: 0.5 }
+        }));
+        assert.equal(readConfig(dir).usageScale.enabled, false, `enabled=${JSON.stringify(enabled)}`);
+        // enabled 非法不影响 ratio 保留。
+        assert.equal(readConfig(dir).usageScale.ratio, 0.5);
+    }
+    for (const ratio of [0, -1, 10.1, NaN, Infinity, '0.5', null, true]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            usageScale: { enabled: true, ratio }
+        }));
+        assert.equal(readConfig(dir).usageScale.ratio, 1, `ratio=${JSON.stringify(ratio)}`);
+    }
+});
+
+test('readConfig: non-object usageScale falls back to defaults', (t) => {
+    const dir = tmpDir(t);
+    for (const usageScale of [null, 'x', 7, ['enabled']]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ usageScale }));
+        assert.deepEqual(readConfig(dir).usageScale, { enabled: false, ratio: 1 });
+    }
+});
+
+test('writeConfig: usageScale partial merge keeps sibling field', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ usageScale: { enabled: true, ratio: 0.5 } }, dir);
+    const out = writeConfig({ usageScale: { ratio: 2 } }, dir);
+    // 逐字段合并：只改 ratio 时 enabled 保留原值 true。
+    assert.equal(out.usageScale.ratio, 2);
+    assert.equal(out.usageScale.enabled, true);
+});
+
+test('writeConfig: usageScale write keeps other top-level settings', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
+    const out = writeConfig({ usageScale: { enabled: true } }, dir);
+    assert.equal(out.forwardSuggestionMode, true);
+    assert.equal(out.thinkingAsText, false);
+    assert.deepEqual(out.usageScale, { enabled: true, ratio: 1 });
 });
 
 // ---------- alerts / models.pricing ----------
@@ -412,6 +485,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
+        usageScale: { enabled: false, ratio: 1 },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -425,6 +499,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
+        usageScale: { enabled: false, ratio: 1 },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -438,6 +513,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: true,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
+        usageScale: { enabled: false, ratio: 1 },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -451,6 +527,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'medium' },
         systemPromptOverride: { enabled: false, prompt: '' },
+        usageScale: { enabled: false, ratio: 1 },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
