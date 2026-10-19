@@ -8,6 +8,7 @@ import {
     stripThinkingTextHistory
 } from './thinking-text.js';
 import { extractUsage, extractUsageFromResponseEvents, createUsageTracker } from './usage.js';
+import { scaleUsageInEvent, scaleUsageInMessageJson } from './usage-scale.js';
 import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
 import { buildOverriddenSystem } from './system-prompt.js';
@@ -75,7 +76,9 @@ function extractModelFromResponseEvents(events) {
 // Non-streaming JSON responses: convert thinking content blocks to rendered
 // dim-blockquote text blocks (signatures stripped), CC UA only. Returns
 // thinkingRewritten so request-log recording can flag thinking conversion.
-function transformNonStreamingResponse(body, thinkingAsText) {
+// usageScaleRatio 非空时对 message JSON 的 usage 应用客户端展示缩放
+//（error 等非 message 类型不触碰）；usage 提取始终用缩放前对象。
+function transformNonStreamingResponse(body, thinkingAsText, usageScaleRatio) {
     let parsed;
     try {
         parsed = JSON.parse(body.toString('utf8'));
@@ -83,11 +86,24 @@ function transformNonStreamingResponse(body, thinkingAsText) {
         return { body, usage: null, model: null, thinkingRewritten: false };
     }
     const model = typeof parsed?.model === 'string' && parsed.model ? parsed.model : null;
+    const usage = extractUsage(parsed?.usage);
     if (!thinkingAsText) {
-        return { body, usage: extractUsage(parsed?.usage), model, thinkingRewritten: false };
+        const out = usageScaleRatio === null
+            ? parsed
+            : scaleUsageInMessageJson(parsed, usageScaleRatio);
+        return {
+            body: out === parsed ? body : Buffer.from(JSON.stringify(out), 'utf8'),
+            usage, model, thinkingRewritten: false
+        };
     }
     if (parsed?.type !== 'message' || !Array.isArray(parsed.content)) {
-        return { body, usage: extractUsage(parsed?.usage), model, thinkingRewritten: false };
+        const out = usageScaleRatio === null
+            ? parsed
+            : scaleUsageInMessageJson(parsed, usageScaleRatio);
+        return {
+            body: out === parsed ? body : Buffer.from(JSON.stringify(out), 'utf8'),
+            usage, model, thinkingRewritten: false
+        };
     }
 
     let changed = false;
@@ -97,17 +113,20 @@ function transformNonStreamingResponse(body, thinkingAsText) {
         const text = formatThinkingAsText(block.thinking);
         return [{ type: 'text', text }];
     });
-    // 无 thinking 块时保留原始字节（避免多余重序列化改变转义/空白）；
-    // usage 提取只需 parse，不需要重写 body。
-    if (!changed) {
-        return { body, usage: extractUsage(parsed.usage), model, thinkingRewritten: false };
+    if (changed) parsed.content = content;
+    // 有 thinking 改写或 usage 缩放时重序列化；两者皆无则保留原始字节
+    //（避免多余重序列化改变转义/空白）。
+    const scaled = usageScaleRatio === null
+        ? parsed
+        : scaleUsageInMessageJson(parsed, usageScaleRatio);
+    if (!changed && scaled === parsed) {
+        return { body, usage, model, thinkingRewritten: false };
     }
-    parsed.content = content;
     return {
-        body: Buffer.from(JSON.stringify(parsed), 'utf8'),
-        usage: extractUsage(parsed.usage),
+        body: Buffer.from(JSON.stringify(scaled), 'utf8'),
+        usage,
         model,
-        thinkingRewritten: true
+        thinkingRewritten: changed
     };
 }
 
@@ -164,6 +183,7 @@ export function createProxyServer({
     effortOverride = null,
     systemPromptOverride = null,
     systemPromptCapture = null,
+    usageScale = null,
     upstreamHealth = null,
     failoverUpstreams = [],
     requestLog = null,
@@ -192,6 +212,15 @@ export function createProxyServer({
         .filter(Boolean);
 
     const usage = usageTracker ?? null;
+    // 用量展示缩放：仅 enabled=true 时启用（null / enabled=false / ratio=1 均
+    // 为恒等映射，proxy 路径零行为变化）。仅作用于客户端可见响应，内部
+    // usage 统计始终用缩放前的原始事件。
+    const usageScaleRatio = (usageScale && typeof usageScale === 'object'
+        && usageScale.enabled === true
+        && typeof usageScale.ratio === 'number' && Number.isFinite(usageScale.ratio)
+        && usageScale.ratio > 0 && usageScale.ratio <= 10)
+        ? usageScale.ratio
+        : null;
     // 熔断器：未注入时创建默认实例（3 连败 / 30s 冷却）；无备用上游时不创建，
     // 选路层零开销（单上游无熔断意义，保持透传路径最简）。
     const breaker = upstreamBreaker ?? (failoverBases.length ? createUpstreamBreaker() : null);
@@ -466,7 +495,8 @@ export function createProxyServer({
                         const { body: out, usage: respUsage, model: parsedModel,
                             thinkingRewritten } = transformNonStreamingResponse(
                             Buffer.concat(bodyChunks),
-                            thinkingAsText
+                            thinkingAsText,
+                            usageScaleRatio
                         );
                         const headers = { ...upstreamRes.headers };
                         // Body is re-framed: drop the upstream chunked framing,
@@ -510,13 +540,17 @@ export function createProxyServer({
                             }
                         })) {
                             // message_start 无条件收集：请求埋点的 model 提取
-                            // 依赖它，不随 usage 开关缺席而丢失。
+                            // 依赖它，不随 usage 开关缺席而丢失。内部 usage 统计
+                            // 始终收集缩放前事件，展示缩放仅作用于写向客户端的
+                            // 输出流。
                             if (event.type === 'message_start') collected.push(event);
                             if (usage || logStream) {
                                 if (event.type === 'message_delta') collected.push(event);
                                 dbg.recordEvent(logStream, event);
                             }
-                            await writeEvent(res, event);
+                            await writeEvent(res, usageScaleRatio === null
+                                ? event
+                                : scaleUsageInEvent(event, usageScaleRatio));
                         }
                         res.end();
                         if (usage) {

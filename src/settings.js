@@ -18,6 +18,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     // 系统提示词覆写：开启且 prompt 非空时统一将 CC 请求体的 system 字段
     // 替换为配置文本。默认关闭；prompt 为空时覆写按 no-op 处理。
     systemPromptOverride: { enabled: false, prompt: '' },
+    // 用量展示缩放：开启后按 ratio 缩放返回客户端的 usage input 类字段
+    // （output 不缩放），控制 Ctx% 显示与 auto-compact 触发时机。默认关闭
+    // （上游是多少就是多少）；ratio 有限数 (0, 10]，非法回退 1.0。
+    usageScale: { enabled: false, ratio: 1.0 },
     // 用量告警阈值：当日 tokens 超过 dailyTokens 时 CLI 启动提示 + 设置页红点。
     // 0 表示未配置（不告警）。dailyCost 为费用预算（美元，> 0 有效，0 = 未配置）。
     alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -54,6 +58,7 @@ function normalizeConfig(raw) {
         thinkingAsText: DEFAULT_CONFIG.thinkingAsText,
         effortOverride: { ...DEFAULT_CONFIG.effortOverride },
         systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride },
+        usageScale: { ...DEFAULT_CONFIG.usageScale },
         alerts: { ...DEFAULT_CONFIG.alerts },
         usageAlert: { ...DEFAULT_CONFIG.usageAlert },
         models: {},
@@ -78,6 +83,14 @@ function normalizeConfig(raw) {
         if (typeof spo.prompt === 'string'
             && Buffer.byteLength(spo.prompt, 'utf8') <= MAX_PROMPT_BYTES) {
             config.systemPromptOverride.prompt = spo.prompt;
+        }
+    }
+    const us = raw.usageScale;
+    if (us && typeof us === 'object' && !Array.isArray(us)) {
+        if (typeof us.enabled === 'boolean') config.usageScale.enabled = us.enabled;
+        if (typeof us.ratio === 'number' && Number.isFinite(us.ratio)
+            && us.ratio > 0 && us.ratio <= 10) {
+            config.usageScale.ratio = us.ratio;
         }
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {
@@ -186,6 +199,11 @@ export function writeConfig(partial, envDir) {
             ...current.systemPromptOverride,
             ...partial?.systemPromptOverride
         },
+        usageScale:
+            partial?.usageScale && typeof partial.usageScale === 'object'
+                && !Array.isArray(partial.usageScale)
+                ? { ...current.usageScale, ...partial.usageScale }
+                : current.usageScale,
         forwardSuggestionMode:
             typeof partial?.forwardSuggestionMode === 'boolean'
                 ? partial.forwardSuggestionMode

@@ -1,0 +1,245 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { createProxyServer } from '../src/proxy.js';
+
+// Mock upstream：按调用方给的 events 序列回放 SSE（带 usage 的事件），
+// 或返回非流式 JSON。记录收到的请求体。
+function startMockUpstream({ events = [], json = null } = {}) {
+    const state = { bodies: [] };
+    const server = http.createServer((req, res) => {
+        const chunks = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+            state.bodies.push(Buffer.concat(chunks).toString('utf8'));
+            if (json) {
+                res.writeHead(200, { 'content-type': 'application/json' });
+                res.end(JSON.stringify(json));
+                return;
+            }
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            for (const event of events) {
+                res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+            }
+            res.end();
+        });
+    });
+    const started = new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+    return { state, started };
+}
+
+// connection: close：禁用 undici keep-alive，防止连接池 socket 跨测试残留导致进程挂起。
+const CC_HEADERS = { 'user-agent': 'claude-cli/2.1', 'content-type': 'application/json', connection: 'close' };
+const OTHER_HEADERS = { ...CC_HEADERS, 'user-agent': 'other-client/1.0' };
+
+// 含 usage 的最小 SSE 事件序列：message_start 带全量 input 类字段，
+// message_delta 只带 output_tokens（Anthropic 语义）。
+const SSE_EVENTS = [
+    { type: 'message_start', message: { model: 'claude-sonnet-5', usage: {
+        input_tokens: 1000, cache_creation_input_tokens: 40, cache_read_input_tokens: 200,
+        output_tokens: 1
+    } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 555 } },
+    { type: 'message_stop' }
+];
+
+async function startProxy(upstream, options = {}) {
+    const proxy = createProxyServer({
+        baseUrlEnv: `http://127.0.0.1:${upstream.address().port}`,
+        ...options
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+    return proxy;
+}
+
+async function post(port, headers = CC_HEADERS) {
+    return fetch(`http://127.0.0.1:${port}/v1/messages`, {
+        method: 'POST', headers, body: '{}'
+    });
+}
+
+// 解析客户端收到的 SSE 流为事件对象数组。
+async function readSseEvents(res) {
+    const text = await res.text();
+    const events = [];
+    for (const block of text.split('\n\n')) {
+        const dataLines = block.split('\n').filter((l) => l.startsWith('data:'));
+        if (!dataLines.length) continue;
+        events.push(JSON.parse(dataLines.map((l) => l.slice(5).trimStart()).join('\n')));
+    }
+    return events;
+}
+
+test('usage scale enabled: SSE input-class fields scaled, output untouched, internal stats real', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const recorded = [];
+    const proxy = await startProxy(upstream, {
+        usageScale: { enabled: true, ratio: 0.5 },
+        usageTracker: { record: (usage, model) => recorded.push({ usage, model }) }
+    });
+
+    try {
+        const res = await post(proxy.address().port);
+        assert.equal(res.status, 200);
+        const events = await readSseEvents(res);
+        const start = events.find((e) => e.type === 'message_start');
+        const delta = events.find((e) => e.type === 'message_delta');
+        assert.equal(start.message.usage.input_tokens, 500);
+        assert.equal(start.message.usage.cache_creation_input_tokens, 20);
+        assert.equal(start.message.usage.cache_read_input_tokens, 100);
+        assert.equal(start.message.usage.output_tokens, 1);
+        assert.equal(delta.usage.output_tokens, 555);
+        // 内部统计：真实值（缩放前）。
+        assert.equal(recorded.length, 1);
+        assert.equal(recorded[0].usage.inputTokens, 1000);
+        assert.equal(recorded[0].usage.cacheReadTokens, 200);
+        assert.equal(recorded[0].usage.outputTokens, 555);
+        assert.equal(recorded[0].model, 'claude-sonnet-5');
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('usage scale enabled with ratio 2: input fields amplified', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const proxy = await startProxy(upstream, {
+        usageScale: { enabled: true, ratio: 2 }
+    });
+
+    try {
+        const res = await post(proxy.address().port);
+        const events = await readSseEvents(res);
+        const start = events.find((e) => e.type === 'message_start');
+        assert.equal(start.message.usage.input_tokens, 2000);
+        assert.equal(start.message.usage.cache_read_input_tokens, 400);
+        assert.equal(start.message.usage.output_tokens, 1);
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('usage scale disabled (enabled=false, ratio≠1): passthrough byte-identical usage', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const proxy = await startProxy(upstream, {
+        usageScale: { enabled: false, ratio: 0.5 }
+    });
+
+    try {
+        const res = await post(proxy.address().port);
+        const events = await readSseEvents(res);
+        const start = events.find((e) => e.type === 'message_start');
+        // 关闭态：上游是多少就是多少。
+        assert.equal(start.message.usage.input_tokens, 1000);
+        assert.equal(start.message.usage.cache_read_input_tokens, 200);
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('usage scale null / ratio=1: no rewriting at all', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const proxy = await startProxy(upstream, { usageScale: null });
+
+    try {
+        const res = await post(proxy.address().port);
+        const events = await readSseEvents(res);
+        const start = events.find((e) => e.type === 'message_start');
+        assert.equal(start.message.usage.input_tokens, 1000);
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('usage scale: non-CC UA traffic untouched', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const proxy = await startProxy(upstream, {
+        usageScale: { enabled: true, ratio: 0.5 }
+    });
+
+    try {
+        const res = await post(proxy.address().port, OTHER_HEADERS);
+        const text = await res.text();
+        // 非 CC UA：SSE 原样透传，usage 字段保持上游原值。
+        assert.ok(text.includes('"input_tokens":1000'));
+        assert.ok(!text.includes('"input_tokens":500'));
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('usage scale enabled: non-streaming message JSON usage scaled, output kept', async () => {
+    const { started } = startMockUpstream({
+        json: {
+            type: 'message',
+            model: 'claude-sonnet-5',
+            content: [{ type: 'text', text: 'hi' }],
+            usage: { input_tokens: 1000, cache_read_input_tokens: 200, output_tokens: 555 }
+        }
+    });
+    const upstream = await started;
+    const recorded = [];
+    const proxy = await startProxy(upstream, {
+        usageScale: { enabled: true, ratio: 0.5 },
+        usageTracker: { record: (usage, model) => recorded.push({ usage, model }) }
+    });
+
+    try {
+        const res = await post(proxy.address().port);
+        const body = JSON.parse(await res.text());
+        assert.equal(body.usage.input_tokens, 500);
+        assert.equal(body.usage.cache_read_input_tokens, 100);
+        assert.equal(body.usage.output_tokens, 555);
+        assert.equal(recorded.length, 1);
+        assert.equal(recorded[0].usage.inputTokens, 1000);
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('usage scale enabled: error JSON passthrough untouched', async () => {
+    const { started } = startMockUpstream({
+        json: { type: 'error', error: { type: 'invalid_request_error', message: 'x' } }
+    });
+    const upstream = await started;
+    const proxy = await startProxy(upstream, {
+        usageScale: { enabled: true, ratio: 0.5 }
+    });
+
+    try {
+        const res = await post(proxy.address().port);
+        const body = JSON.parse(await res.text());
+        assert.equal(body.type, 'error');
+        assert.equal(body.error.type, 'invalid_request_error');
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});

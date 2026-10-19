@@ -95,7 +95,7 @@ export async function main({
     // ~/.cc-proxy/runtime/recent-requests.json，供设置页只读展示。
     const requestLogTracker = createRequestLogTracker();
     const settings = readSettings();
-    const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride } = settings;
+    const { forwardSuggestionMode, thinkingAsText, effortOverride, systemPromptOverride, usageScale } = settings;
     // 当日用量告警：仅当 config 配置了 alerts.dailyTokens（> 0）且当日累计
     // tokens 已超阈值时，在启动横幅前追加一条警告；未配置/未超限零输出。
     const threshold = settings?.alerts?.dailyTokens ?? 0;
@@ -118,6 +118,7 @@ export async function main({
         thinkingAsText,
         effortOverride,
         systemPromptOverride,
+        usageScale,
         systemPromptCapture: createSystemPromptCapture({
             file: capturedSystemPromptPath()
         }),
