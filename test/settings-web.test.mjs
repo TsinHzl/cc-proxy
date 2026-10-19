@@ -238,7 +238,10 @@ function createPageElement({ disabled = false } = {}) {
             listeners.set(type, listener);
         },
         async dispatch(type) {
-            await listeners.get(type)?.({ type, target: this, currentTarget: this });
+            await listeners.get(type)?.({
+                type, button: 0, target: this, currentTarget: this,
+                preventDefault() {}
+            });
         }
     };
     // className 与 classList 联动：详情行按 className==='request-detail' 判定，
@@ -261,6 +264,24 @@ async function flushPageMicrotasks() {
     for (let index = 0; index < 24; index += 1) {
         await Promise.resolve();
     }
+}
+
+// 定向缩放列表容器：模拟 textContent='' 清空子元素 + appendChild 收集。
+function createListElement() {
+    const el = createPageElement();
+    let children = [];
+    el.appendChild = (child) => {
+        children.push(child);
+    };
+    Object.defineProperty(el, 'textContent', {
+        configurable: true,
+        get: () => '',
+        set: (value) => {
+            if (value === '') children = [];
+        }
+    });
+    Object.defineProperty(el, 'children', { get: () => children });
+    return el;
 }
 
 function createPageHarness(fetchHandler) {
@@ -317,6 +338,12 @@ function createPageHarness(fetchHandler) {
                 inputTag('usageScaleRatio')
             )
         }),
+        scaleTargetList: createListElement(),
+        scaleTargetAdd: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                html.match(/<button[^>]+id="scaleTargetAdd"[^>]*>/i)?.[0] ?? ''
+            )
+        }),
         status: createPageElement(),
         usageBoard: createPageElement(),
         healthBoard: createPageElement(),
@@ -347,13 +374,17 @@ function createPageHarness(fetchHandler) {
             },
             createTextNode: (text) => ({ textContent: text, nodeType: 3 })
         },
-        URL: {
-            createObjectURL(blob) {
+        // URL 需同时支持 new URL(...)（定向缩放列表本地校验）与静态
+        // createObjectURL/revokeObjectURL（用量导出下载链路）。
+        URL: class extends URL {
+            static createObjectURL(blob) {
                 const url = 'blob:mock-' + objectUrls.length;
                 objectUrls.push({ blob, url });
                 return url;
-            },
-            revokeObjectURL: (url) => revokedUrls.push(url)
+            }
+            static revokeObjectURL(url) {
+                revokedUrls.push(url);
+            }
         },
         // 导出下载链路的 revoke 推迟到宏任务，沙箱需显式注入宿主定时器。
         setTimeout,
@@ -521,7 +552,7 @@ test('page script: template select resets to CC官方 on input and applySettings
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
-                        usageScale: { enabled: false, ratio: 1 }
+                        usageScale: { enabled: false, ratio: 1, baseUrls: [] }
                 }
             });
         }
@@ -801,7 +832,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
-                        usageScale: { enabled: false, ratio: 1 }
+                        usageScale: { enabled: false, ratio: 1, baseUrls: [] }
                 }
             });
         });
@@ -836,7 +867,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
-                        usageScale: { enabled: false, ratio: 1 }
+                        usageScale: { enabled: false, ratio: 1, baseUrls: [] }
                 }
             });
         });
@@ -864,7 +895,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
-                        usageScale: { enabled: false, ratio: 1 }
+                        usageScale: { enabled: false, ratio: 1, baseUrls: [] }
                 }
             });
         });
@@ -899,7 +930,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
-                        usageScale: { enabled: false, ratio: 1 }
+                        usageScale: { enabled: false, ratio: 1, baseUrls: [] }
                 }
             });
         });
@@ -910,6 +941,128 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
         assert.equal(page.elements.systemPromptOverridePrompt.disabled, false);
         assert.equal(page.elements.systemPromptOverridePrompt.value, '');
     });
+});
+
+test('page script: scale target list renders, adds, removes and submits baseUrls', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            patched.push(JSON.parse(options.body));
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high' },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: {
+                        enabled: true,
+                        ratio: 0.5,
+                        baseUrls: JSON.parse(options.body).value
+                    }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: {
+                    enabled: true,
+                    ratio: 0.5,
+                    baseUrls: ['https://a.com/api', 'http://b.com:8080']
+                }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    // 加载后按权威快照渲染两行，控件已启用。
+    assert.equal(page.elements.scaleTargetList.children.length, 2);
+    assert.equal(page.elements.scaleTargetAdd.disabled, false);
+    const firstInput = page.elements.scaleTargetList.children[0].options[0];
+    assert.equal(firstInput.value, 'https://a.com/api');
+
+    // 新增一行并填入合法 URL：blur 全量提交。
+    await page.elements.scaleTargetAdd.dispatch('pointerdown');
+    await page.elements.scaleTargetAdd.dispatch('click');
+    assert.equal(page.elements.scaleTargetList.children.length, 3);
+    const newRow = page.elements.scaleTargetList.children[2];
+    const newInput = newRow.options[0];
+    newInput.value = 'https://c.com';
+    await newInput.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 1);
+    assert.equal(patched[0].key, 'usageScale.baseUrls');
+    assert.deepEqual(patched[0].value,
+        ['https://a.com/api', 'http://b.com:8080', 'https://c.com']);
+
+    // 删除首行：提交剩余两项。
+    const firstRemove = page.elements.scaleTargetList.children[0].options[1];
+    await firstRemove.dispatch('pointerdown');
+    await firstRemove.dispatch('click');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 2);
+    assert.deepEqual(patched[1].value, ['http://b.com:8080', 'https://c.com']);
+});
+
+test('page script: invalid scale target URL blocks submit and rolls back', async (t) => {
+    let patched = 0;
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            patched += 1;
+            return pageJsonResponse(200, { ok: true, data: {} });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high' },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: ['https://a.com'] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+    assert.equal(page.elements.scaleTargetList.children.length, 1);
+
+    // 非法 URL（缺协议）：不提交、提示错误、回滚为快照值。
+    const input = page.elements.scaleTargetList.children[0].options[0];
+    input.value = 'not a url';
+    await input.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched, 0);
+    assert.equal(page.elements.status.textContent, '目标上游须为 http(s) URL');
+    assert.equal(page.elements.scaleTargetList.children.length, 1);
+    assert.equal(
+        page.elements.scaleTargetList.children[0].options[0].value,
+        'https://a.com'
+    );
+
+    // 非 http(s) 协议同样拦截。
+    const input2 = page.elements.scaleTargetList.children[0].options[0];
+    input2.value = 'ftp://a.com';
+    await input2.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched, 0);
 });
 
 async function startApi({
@@ -1388,7 +1541,7 @@ test(
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
             systemPromptOverride: { enabled: false, prompt: '' },
-            usageScale: { enabled: false, ratio: 1 }
+            usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         });
 
         const updated = await fetch(`${origin}/api/settings`, {
@@ -1409,7 +1562,7 @@ test(
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
             systemPromptOverride: { enabled: false, prompt: '' },
-                usageScale: { enabled: false, ratio: 1 }
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         });
 
         const configFile = path.join(envDir, 'config.json');
@@ -1421,7 +1574,7 @@ test(
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
-                    usageScale: { enabled: false, ratio: 1 },
+                    usageScale: { enabled: false, ratio: 1, baseUrls: [] },
                 alerts: { dailyTokens: 0, dailyCost: 0 },
                 usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
                 models: {},
@@ -1761,7 +1914,7 @@ test('API: PATCH systemPromptOverride writes prompt and enabled', async (t) => {
             forwardSuggestionMode: false,
             thinkingAsText: true,
             systemPromptOverride: { enabled: false, prompt: '' },
-            usageScale: { enabled: false, ratio: 1 }
+            usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         }),
         write: (partial) => {
             update = partial;
@@ -1802,7 +1955,7 @@ test('API: rejects invalid systemPromptOverride patches without writes', async (
             forwardSuggestionMode: false,
             thinkingAsText: true,
             systemPromptOverride: { enabled: false, prompt: '' },
-            usageScale: { enabled: false, ratio: 1 }
+            usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         }),
         write: () => { writes += 1; }
     });
@@ -1837,7 +1990,7 @@ test('API: PATCH usageScale writes enabled and ratio, invalid ratio rejected', a
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
             systemPromptOverride: { enabled: false, prompt: '' },
-            usageScale: { enabled: false, ratio: 1 }
+            usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         }),
         write: (partial) => {
             update = partial;
@@ -1890,6 +2043,79 @@ test('API: PATCH usageScale writes enabled and ratio, invalid ratio rejected', a
         assert.equal(response.status, 400, body);
     }
     assert.equal(writes, writesBefore);
+    const baseUrlsPatch = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'usageScale.baseUrls', value: ['https://a.com/api', 'http://b.com:8080'] })
+    });
+    assert.equal(baseUrlsPatch.status, 200);
+    assert.deepEqual(update, { usageScale: { baseUrls: ['https://a.com/api', 'http://b.com:8080'] } });
+    // 空数组 = 清空定向列表（等效全量缩放），须合法。
+    const emptyPatch = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'usageScale.baseUrls', value: [] })
+    });
+    assert.equal(emptyPatch.status, 200);
+    assert.deepEqual(update, { usageScale: { baseUrls: [] } });
+});
+
+test('API: PATCH usageScale.baseUrls trims whitespace before write', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({ usageScale: { enabled: true, ratio: 0.5, baseUrls: [] } }),
+        write: (partial) => {
+            update = partial;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    const response = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'usageScale.baseUrls', value: ['  https://a.com/api  '] })
+    });
+    assert.equal(response.status, 200);
+    // 校验与落盘同口径：边界处 trim 后交给 writeConfig。
+    assert.deepEqual(update, { usageScale: { baseUrls: ['https://a.com/api'] } });
+});
+
+test('API: PATCH usageScale.baseUrls invalid array rejected with 400', async (t) => {
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({
+            forwardSuggestionMode: false,
+            thinkingAsText: true,
+            effortOverride: { enabled: true, level: 'high' },
+            systemPromptOverride: { enabled: false, prompt: '' },
+            usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+        }),
+        write: () => {
+            writes += 1;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    for (const body of [
+        // 非数组。
+        JSON.stringify({ key: 'usageScale.baseUrls', value: 'https://a.com' }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: null }),
+        // 含非字符串 / 空串 / 不可解析 / 非 http(s) 协议项：任一非法整次 400。
+        JSON.stringify({ key: 'usageScale.baseUrls', value: ['https://a.com', 42] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: ['https://a.com', ''] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: ['not a url'] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: ['ftp://a.com'] })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, 0);
 });
 
 test('API: GET captured-system-prompt returns captured text or null', async (t) => {

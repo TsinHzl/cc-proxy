@@ -8,7 +8,13 @@ import {
     stripThinkingTextHistory
 } from './thinking-text.js';
 import { extractUsage, extractUsageFromResponseEvents, createUsageTracker } from './usage.js';
-import { scaleUsageInEvent, scaleUsageInMessageJson } from './usage-scale.js';
+import {
+    scaleUsageInEvent,
+    scaleUsageInMessageJson,
+    normalizeScaleBaseUrl,
+    buildScaleTargetSet,
+    isScaleTargetHit
+} from './usage-scale.js';
 import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
 import { buildOverriddenSystem } from './system-prompt.js';
@@ -199,6 +205,11 @@ export function createProxyServer({
                 return {
                     base: { protocol: base.protocol, host: base.host, port: base.port },
                     basePath: base.path,
+                    // 规范化完整 base（与匹配侧同源，统一尾斜杠/缺省端口归一）；
+                    // 非 http(s) 协议时 normalize 返回 null，回退手工拼接保持
+                    // 既有转发行为（该上游永不命中定向列表）。
+                    scaleBase: normalizeScaleBaseUrl(item.baseUrl)
+                        ?? `${base.protocol}//${base.host}:${base.port}${base.path}`,
                     headers: item.headers,
                     name: item.name
                 };
@@ -221,6 +232,23 @@ export function createProxyServer({
         && usageScale.ratio > 0 && usageScale.ratio <= 10)
         ? usageScale.ratio
         : null;
+    // 主上游完整 base（协议//host:端口/basePath）：与 normalizeScaleBaseUrl
+    // 输出同构，供定向缩放判定与实际命中上游比对。resolveUpstream 已完成
+    // 尾斜杠与缺省端口归一。
+    const primaryScaleBase = (() => {
+        // 与匹配侧共用同一规范化函数，保证配置项与实际 base 的可比性。
+        const normalized = normalizeScaleBaseUrl(baseUrlEnv);
+        if (normalized !== null) return normalized;
+        // 未设置（走默认官方 API）或非 http(s) 协议：回退 resolveUpstream
+        // 结果（协议异常时定向匹配永不命中，不影响既有转发行为）。
+        const base = resolveUpstream('', baseUrlEnv);
+        return `${base.protocol}//${base.host}:${base.port}${base.path}`;
+    })();
+    // 定向缩放目标集合：null 表示未配置 / 全部非法（等效空列表 → 全量缩放）。
+    // 关闭态（ratio null）无需构造，保持零开销。
+    const scaleTargetSet = usageScaleRatio === null
+        ? null
+        : buildScaleTargetSet(usageScale.baseUrls);
     // 熔断器：未注入时创建默认实例（3 连败 / 30s 冷却）；无备用上游时不创建，
     // 选路层零开销（单上游无熔断意义，保持透传路径最简）。
     const breaker = upstreamBreaker ?? (failoverBases.length ? createUpstreamBreaker() : null);
@@ -267,12 +295,15 @@ export function createProxyServer({
     // - 全部 open：忽略熔断按原顺序尝试全部（熔断不是最终否决）。
     // 无 breaker（单上游或未启用）时走原顺序，零行为变化。
     const buildTargets = (req, target) => {
-        const primaries = [{ target, headers: undefined, name: undefined }];
+        const primaries = [{ target, headers: undefined, name: undefined,
+            scaleBase: primaryScaleBase }];
         const backups = failoverBases.map((f) => ({
             target: { protocol: f.base.protocol, host: f.base.host,
                 port: f.base.port, path: `${f.basePath}${req.url}` },
             headers: f.headers,
-            name: f.name
+            name: f.name,
+            // 定向缩放判定用的完整 base（不含请求 path）。
+            scaleBase: f.scaleBase
         }));
         if (!breaker || !backups.length) return [...primaries, ...backups];
 
@@ -388,8 +419,17 @@ export function createProxyServer({
             let sampled = false;
             let ttfbAt = 0;
             // 上游健康埋点：activeUpstreamId 跟随故障转移切换（onFailover 更新），
-            // 响应头到达 / 失败回调据此归属统计。
-            let activeUpstreamId = target.host;
+            // 响应头到达 / 失败回调据此归属统计。初始值取选路结果首项的 label
+            // （与 onFailover 的 to 口径一致）——熔断重排时首个实际上游可能是
+            // 备用，固定用主上游 host 会把成败误记到未被请求的上游。
+            let activeUpstreamId = targets[0]
+                ? (targets[0].name || targets[0].target.host)
+                : target.host;
+            // 定向缩放：实际命中上游的完整 base。初始值取选路结果首项——
+            // 熔断 open / half-open 探测被拒时首个实际上游可能是备用，
+            // 此时不产生 onFailover 事件，不能固定用主上游 base。响应头到达
+            // 时 failover 已终结，respond 内据此判定即最终上游。
+            let activeUpstreamBase = targets[0]?.scaleBase ?? primaryScaleBase;
             // 熔断器同请求内去重：同一上游的多次重试失败只记一次（连续失败
             // 计数按「请求」为单位，不按重试尝试次数）。
             const probedThisRequest = new Set();
@@ -441,13 +481,21 @@ export function createProxyServer({
             forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
+                // 定向缩放：本请求最终命中上游的生效比例。targetSet 为 null
+                // （未配置列表）时全量缩放；否则仅命中上游缩放，未命中为
+                // null（1:1 透传，与关闭态同一路径）。
+                const effectiveScaleRatio = usageScaleRatio !== null
+                    && (scaleTargetSet === null
+                        || isScaleTargetHit(activeUpstreamBase, scaleTargetSet))
+                    ? usageScaleRatio
+                    : null;
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 // 熔断记败（onProbe）：触发了故障转移的状态码（429/5xx）视为
                 // 该上游失败；未触发转移的状态码（含 4xx 与最终错误响应）视为
                 // 该上游本身可达（连接面健康），记成功。
                 const statusCodeFails = FAILOVER_STATUS.has(upstreamRes.statusCode);
                 ttfbAt = Date.now();
-                // 响应头到达即记成功样本（含最终返回 4xx/5xx 的上���——该上游
+                // 响应头到达即记成功样本（含最终返回 4xx/5xx 的上游——该上游
                 // 本身可达，连接面是健康的）。
                 recordUpstreamHealth(true, ttfbAt - requestStartedAt.getTime(),
                     { breakerCount: !statusCodeFails });
@@ -496,7 +544,7 @@ export function createProxyServer({
                             thinkingRewritten } = transformNonStreamingResponse(
                             Buffer.concat(bodyChunks),
                             thinkingAsText,
-                            usageScaleRatio
+                            effectiveScaleRatio
                         );
                         const headers = { ...upstreamRes.headers };
                         // Body is re-framed: drop the upstream chunked framing,
@@ -548,9 +596,9 @@ export function createProxyServer({
                                 if (event.type === 'message_delta') collected.push(event);
                                 dbg.recordEvent(logStream, event);
                             }
-                            await writeEvent(res, usageScaleRatio === null
+                            await writeEvent(res, effectiveScaleRatio === null
                                 ? event
-                                : scaleUsageInEvent(event, usageScaleRatio));
+                                : scaleUsageInEvent(event, effectiveScaleRatio));
                         }
                         res.end();
                         if (usage) {
@@ -603,8 +651,12 @@ export function createProxyServer({
             }, {
                 isClientGone: () => res.destroyed || res.writableEnded,
                 // 故障转移埋点：切换事件（时间+原因）入环形缓冲，后续样本归属新上游。
-                onFailover: (from, to, reason) => {
+                onFailover: (from, to, reason, toEntry) => {
                     failedOverFlag = true;
+                    // 定向缩放归属：第 4 参数为切换目标 entry（含完整 base）。
+                    // 先于 upstreamHealth 早退更新，确保未注入健康统计时
+                    // 缩放判定仍跟随实际命中上游。
+                    if (toEntry?.scaleBase) activeUpstreamBase = toEntry.scaleBase;
                     if (!upstreamHealth) return;
                     upstreamHealth.recordFailover(from, to, reason);
                     activeUpstreamId = to;

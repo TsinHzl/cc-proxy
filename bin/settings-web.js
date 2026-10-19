@@ -33,7 +33,8 @@ const ALLOWED_KEYS = new Set([
     'systemPromptOverride.enabled',
     'systemPromptOverride.prompt',
     'usageScale.enabled',
-    'usageScale.ratio'
+    'usageScale.ratio',
+    'usageScale.baseUrls'
 ]);
 // effort 档位枚举单点定义（与 src/settings.js 的 EFFORT_LEVELS 保持一致）。
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
@@ -325,6 +326,23 @@ function isValidSettingsPatch(body) {
         return typeof body.value === 'number' && Number.isFinite(body.value)
             && body.value > 0 && body.value <= 10;
     }
+    if (body.key === 'usageScale.baseUrls') {
+        // 与 settings.js normalizeConfig 同口径：字符串数组且逐项可 new URL
+        // 解析、协议限 http/https；数组内混入任一非法项整次提交判 400
+        // （设置页本地拦截为第一道防线，此处为兜底）。
+        if (!Array.isArray(body.value)) return false;
+        return body.value.every((item) => {
+            if (typeof item !== 'string') return false;
+            const value = item.trim();
+            if (!value) return false;
+            try {
+                const u = new URL(value);
+                return u.protocol === 'http:' || u.protocol === 'https:';
+            } catch {
+                return false;
+            }
+        });
+    }
     return typeof body.value === 'boolean';
 }
 
@@ -371,9 +389,14 @@ async function handleSettingsPatch(context, req, res, host) {
         // 点号 key 展开为嵌套 partial（{ effortOverride: { level: value } }），
         // 顶层 key 直接映射，writeConfig 逐字段合并保留未提交字段。
         const [group, leaf] = body.key.split('.');
+        // baseUrls 在边界处归一（trim）：校验与落盘同口径，避免配置层二次
+        // 归一成为隐式契约。
+        const value = body.key === 'usageScale.baseUrls'
+            ? body.value.map((item) => item.trim())
+            : body.value;
         const patch = leaf
-            ? { [group]: { [leaf]: body.value } }
-            : { [body.key]: body.value };
+            ? { [group]: { [leaf]: value } }
+            : { [body.key]: value };
         const config = await context.write(patch);
         sendJson(res, 200, {
             ok: true,

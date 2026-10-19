@@ -29,7 +29,7 @@ src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处
   ├─ src/thinking-text.js     thinking→text 流式改写（核心特性）
   ├─ src/suggestion-mode.js   [SUGGESTION MODE 请求识别与空响应拦截
   ├─ src/usage.js             token 用量提取 → ~/.cc-proxy/usage.json（按天）
-  ├─ src/usage-scale.js       客户端可见 usage 缩放（usageScale 配置；output 不缩放，内部统计真实值）
+  ├─ src/usage-scale.js       客户端可见 usage 缩放（usageScale 配置；output 不缩放，内部统计真实值；baseUrls 定向匹配）
   ├─ src/usage-store.js       用量存储抽象层（JSON / SQLite 双模式探测 + 历史导入）
   ├─ src/pricing.js           模型单价解析（config 覆盖内置价表，精确→前缀）
   ├─ src/latency.js           会话级延迟统计（TTFT 采样，退出时汇总）
@@ -38,6 +38,7 @@ src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处
   └─ src/logger.js            静默日志（见下方关键约束）
 bin/settings-web.js   cc-proxy --setting：本地 Web 设置页 + 受保护 API
   ├─ bin/settings-page.js     设置页 HTML（模板 + 内联脚本，bootstrap nonce 注入）
+  ├─ bin/settings-page-scaletargets.js  定向缩放目标上游列表（样式 + HTML + 脚本片段）
   └─ bin/settings-session.js  SSE 租约生命周期（页面全关 2s 后退出等）
 src/settings.js       ~/.cc-proxy/config.json 读写（缺失/损坏回退默认值）
 ```
