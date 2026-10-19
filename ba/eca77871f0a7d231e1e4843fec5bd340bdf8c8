@@ -1,0 +1,45 @@
+test/usage-scale.test.mjs
+  727a034631d893bc 1-155
+test/settings.test.mjs
+  727a034631d893bc 14,79,246,252-320,488,502,516,530
+test/proxy-usage-scale.test.mjs
+  727a034631d893bc 1-245
+bin/claude-proxy.js
+  727a034631d893bc 98,121
+CLAUDE.md
+  727a034631d893bc 32
+src/usage-scale.js
+  727a034631d893bc 1-89
+src/settings.js
+  727a034631d893bc 21-24,61,88-95,202-206
+src/proxy.js
+  727a034631d893bc 11,79-81,89,91-97,100-106,116-123,126,129,186,215-223,498-499,543-545,551-553
+bin/settings-page.js
+  727a034631d893bc 84-98,195-208,246,251-252,254,259-260,445-447,454-455,472-475,561-563,668-695
+test/settings-web.test.mjs
+  727a034631d893bc 19,24,32-33,310-319,523-524,803-804,838-839,866-867,901-902,1390-1391,1411-1412,1424,1763-1764,1804-1805,1831-1871,1873-1894
+bin/settings-web.js
+  727a034631d893bc 34-36,71-72,323-327
+README.md
+  727a034631d893bc 126,132,134,147-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "baeca77871f0a7d231e1e4843fec5bd340bdf8c8",
+  "prompts": {
+    "727a034631d893bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b21ef64-018e-4920-b120-4eb738c5fbbc",
+        "model": "glm_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 940,
+      "total_deletions": 59,
+      "accepted_lines": 918,
+      "overriden_lines": 0
+    }
+  }
+}
