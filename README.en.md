@@ -18,8 +18,15 @@ Requirements:
 - Claude Code CLI installed (`claude` available on your PATH)
 
 ```bash
-git clone <repo-url> cc-proxy && cd cc-proxy
+git clone https://github.com/TsinHzl/cc-proxy.git cc-proxy && cd cc-proxy
 npm link          # registers the claude-proxy / cc-proxy commands on your global PATH
+```
+
+Clone-free direct install (npm fetches master from GitHub globally; re-run the
+same command to update):
+
+```bash
+npm install -g github:TsinHzl/cc-proxy
 ```
 
 Verify:

@@ -17,8 +17,14 @@ claude code 本地代理：让直连 Anthropic API / 任意第三方网关的 Cl
 - 已安装 Claude Code CLI（`claude` 命令可用）
 
 ```bash
-git clone <repo-url> cc-proxy && cd cc-proxy
+git clone https://github.com/TsinHzl/cc-proxy.git cc-proxy && cd cc-proxy
 npm link          # 把 claude-proxy / cc-proxy 两个命令注册到全局 PATH
+```
+
+免 clone 直装（npm 拉取 GitHub master 全局安装，更新时重跑同一命令）：
+
+```bash
+npm install -g github:TsinHzl/cc-proxy
 ```
 
 验证：
