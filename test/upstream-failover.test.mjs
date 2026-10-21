@@ -41,6 +41,7 @@ function send(targets, options = {}) {
 
 test('fails over to backup after primary exhausts 503 retries', async () => {
     let failoverEvents = null;
+    let failoverEntry = null;
     const primary = await startMockUpstream((req, res) => {
         res.writeHead(503, { 'content-type': 'application/json' });
         res.end('overloaded');
@@ -48,13 +49,45 @@ test('fails over to backup after primary exhausts 503 retries', async () => {
     const backup = await startMockUpstream((req, res) => sse(res, 'from-backup'));
     try {
         const res = await send([target(primary.address().port), target(backup.address().port)], {
-            onFailover: (from, to) => { failoverEvents = [from, to]; }
+            onFailover: (from, to, reason, toEntry) => {
+                failoverEvents = [from, to];
+                failoverEntry = toEntry;
+            }
         });
         assert.equal(res.status, 200);
         assert.equal(res.body, 'from-backup');
         assert.equal(primary.calls(), 4); // 首次 + 3 次同上游重试
         assert.equal(backup.calls(), 1);
         assert.deepEqual(failoverEvents, ['127.0.0.1', '127.0.0.1']);
+        // 第 4 参数：切换目标 entry（裸 target 经 toEntry 包装），携带完整
+        // target 供定向缩放等需要完整 base URL 的消费方使用。
+        assert.equal(failoverEntry.target.port, String(backup.address().port));
+    } finally {
+        primary.close();
+        backup.close();
+    }
+});
+
+test('onFailover 4th arg carries the backup entry with caller-attached fields', async () => {
+    let failoverEntry = null;
+    const primary = await startMockUpstream((req, res) => {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end('err');
+    });
+    const backup = await startMockUpstream((req, res) => sse(res, 'ok'));
+    const backupEntry = {
+        target: target(backup.address().port),
+        name: 'backup',
+        base: 'http://127.0.0.1:9999/api'
+    };
+    try {
+        await send([target(primary.address().port), backupEntry], {
+            onFailover: (from, to, reason, toEntry) => { failoverEntry = toEntry; }
+        });
+        // 包装对象原样透传（含调用方附加的 base 字段），供 proxy 定向缩放判定。
+        assert.equal(failoverEntry, backupEntry);
+        assert.equal(failoverEntry.base, 'http://127.0.0.1:9999/api');
+        assert.equal(failoverEntry.name, 'backup');
     } finally {
         primary.close();
         backup.close();

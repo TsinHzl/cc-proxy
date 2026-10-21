@@ -11,7 +11,7 @@ const EXPECTED_DEFAULT_CONFIG = {
     thinkingAsText: true,
     effortOverride: { enabled: true, level: 'high' },
     systemPromptOverride: { enabled: false, prompt: '' },
-    usageScale: { enabled: false, ratio: 1.0 },
+    usageScale: { enabled: false, ratio: 1.0, baseUrls: [] },
     alerts: { dailyTokens: 0, dailyCost: 0 },
     usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
     models: {},
@@ -76,7 +76,7 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'high' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        usageScale: { enabled: false, ratio: 1 },
+        usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -243,7 +243,7 @@ test('writeConfig: systemPromptOverride write keeps other top-level settings', (
     const dir = tmpDir(t);
     writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
     const out = writeConfig({ systemPromptOverride: { prompt: 'x' } }, dir);
-    // 防丢失：��� systemPromptOverride 不得重置已保存的顶层开关。
+    // 防丢失：写 systemPromptOverride 不得重置已保存的顶层开关。
     assert.equal(out.forwardSuggestionMode, true);
     assert.equal(out.thinkingAsText, false);
     assert.deepEqual(out.systemPromptOverride, { enabled: false, prompt: 'x' });
@@ -256,7 +256,7 @@ test('readConfig: old config without usageScale defaults it to disabled/ratio 1'
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
         thinkingWindow: { enabled: true, lines: 25 }
     }));
-    assert.deepEqual(readConfig(dir).usageScale, { enabled: false, ratio: 1 });
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: false, ratio: 1, baseUrls: [] });
 });
 
 test('readConfig: explicit usageScale values persist (incl. ratio > 1)', (t) => {
@@ -264,16 +264,16 @@ test('readConfig: explicit usageScale values persist (incl. ratio > 1)', (t) => 
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
         usageScale: { enabled: true, ratio: 0.6657 }
     }));
-    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 0.6657 });
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 0.6657, baseUrls: [] });
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
         usageScale: { enabled: true, ratio: 2.5 }
     }));
-    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 2.5 });
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 2.5, baseUrls: [] });
     // 上界 10 为合法闭区间端点。
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
         usageScale: { enabled: true, ratio: 10 }
     }));
-    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 10 });
+    assert.deepEqual(readConfig(dir).usageScale, { enabled: true, ratio: 10, baseUrls: [] });
 });
 
 test('readConfig: invalid usageScale fields fall back field-by-field', (t) => {
@@ -298,7 +298,7 @@ test('readConfig: non-object usageScale falls back to defaults', (t) => {
     const dir = tmpDir(t);
     for (const usageScale of [null, 'x', 7, ['enabled']]) {
         fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ usageScale }));
-        assert.deepEqual(readConfig(dir).usageScale, { enabled: false, ratio: 1 });
+        assert.deepEqual(readConfig(dir).usageScale, { enabled: false, ratio: 1, baseUrls: [] });
     }
 });
 
@@ -317,7 +317,65 @@ test('writeConfig: usageScale write keeps other top-level settings', (t) => {
     const out = writeConfig({ usageScale: { enabled: true } }, dir);
     assert.equal(out.forwardSuggestionMode, true);
     assert.equal(out.thinkingAsText, false);
-    assert.deepEqual(out.usageScale, { enabled: true, ratio: 1 });
+    assert.deepEqual(out.usageScale, { enabled: true, ratio: 1, baseUrls: [] });
+});
+
+test('readConfig: usageScale.baseUrls invalid items dropped per-item', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: {
+            enabled: true,
+            ratio: 0.5,
+            baseUrls: ['https://gw.example.com/api', '::bad::', 42, '', 'ftp://x.com', 'https://ok.com']
+        }
+    }));
+    // 非法项（不可解析 / 非字符串 / 空 / 非 http(s)）逐项丢弃，合法项原样保留。
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls,
+        ['https://gw.example.com/api', 'https://ok.com']);
+});
+
+test('readConfig: usageScale.baseUrls items trimmed on normalize', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: {
+            enabled: true,
+            ratio: 0.5,
+            baseUrls: ['  https://a.com/api  ', '\thttp://b.com\t']
+        }
+    }));
+    // 手改配置的首尾空白在归一阶段去除，与设置 API / 设置页口径一致。
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls,
+        ['https://a.com/api', 'http://b.com']);
+});
+
+test('readConfig: usageScale.baseUrls all-invalid degrades to empty list', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.5, baseUrls: ['::a::', '::b::'] }
+    }));
+    // 全部非法 → 空数组（等效「全量缩放」，README 已注明该边界）。
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, []);
+});
+
+test('readConfig: usageScale.baseUrls non-array ignored, keeps default', (t) => {
+    const dir = tmpDir(t);
+    for (const baseUrls of ['https://x.com', { 0: 'https://x.com' }, null]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+            usageScale: { enabled: true, ratio: 0.5, baseUrls }
+        }));
+        assert.deepEqual(readConfig(dir).usageScale.baseUrls, [],
+            `baseUrls=${JSON.stringify(baseUrls)}`);
+    }
+});
+
+test('writeConfig: usageScale.baseUrls array replaced wholesale, sibling kept', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ usageScale: { enabled: true, ratio: 0.5, baseUrls: ['https://a.com'] } }, dir);
+    const out = writeConfig({ usageScale: { baseUrls: ['https://b.com/api', 'https://c.com'] } }, dir);
+    // 数组整体替换；enabled/ratio 未在 partial 中提交则保留。
+    assert.deepEqual(out.usageScale.baseUrls, ['https://b.com/api', 'https://c.com']);
+    assert.equal(out.usageScale.enabled, true);
+    assert.equal(out.usageScale.ratio, 0.5);
 });
 
 // ---------- alerts / models.pricing ----------
@@ -485,7 +543,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        usageScale: { enabled: false, ratio: 1 },
+        usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -499,7 +557,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        usageScale: { enabled: false, ratio: 1 },
+        usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -513,7 +571,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: true,
         effortOverride: { enabled: false, level: 'low' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        usageScale: { enabled: false, ratio: 1 },
+        usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},
@@ -527,7 +585,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'medium' },
         systemPromptOverride: { enabled: false, prompt: '' },
-        usageScale: { enabled: false, ratio: 1 },
+        usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
         usageAlert: { warnThreshold: 0.8, limitThreshold: 1 },
         models: {},

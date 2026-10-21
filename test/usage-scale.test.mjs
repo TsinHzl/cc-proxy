@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import {
     scaleUsageForClient,
     scaleUsageInEvent,
-    scaleUsageInMessageJson
+    scaleUsageInMessageJson,
+    normalizeScaleBaseUrl,
+    buildScaleTargetSet,
+    isScaleTargetHit
 } from '../src/usage-scale.js';
 
 // ---------- scaleUsageForClient ----------
@@ -152,4 +155,78 @@ test('scaleUsageInMessageJson: non-message / no-usage passthrough', () => {
 test('scaleUsageInMessageJson: malformed truthy non-object usage passes through', () => {
     const message = { type: 'message', usage: 'malformed' };
     assert.equal(scaleUsageInMessageJson(message, 0.5), message);
+});
+
+// ---------- normalizeScaleBaseUrl ----------
+
+test('normalizeScaleBaseUrl: trailing slash stripped, default port normalized', () => {
+    assert.equal(normalizeScaleBaseUrl('https://api.example.com/'), 'https://api.example.com:443');
+    assert.equal(normalizeScaleBaseUrl('https://api.example.com'), 'https://api.example.com:443');
+    assert.equal(normalizeScaleBaseUrl('http://gw.local:8080/'), 'http://gw.local:8080');
+    // 显式端口保留；路径保留（含多段）。
+    assert.equal(normalizeScaleBaseUrl('https://gw.example.com:8443/api/'), 'https://gw.example.com:8443/api');
+    assert.equal(normalizeScaleBaseUrl('https://gw.example.com/api/v1'), 'https://gw.example.com:443/api/v1');
+    // 重复尾斜杠全部剥离（"//" 不得残留为路径 "/"）。
+    assert.equal(normalizeScaleBaseUrl('https://gw.example.com/api//'), 'https://gw.example.com:443/api');
+    assert.equal(normalizeScaleBaseUrl('https://gw.example.com///'), 'https://gw.example.com:443');
+});
+
+test('normalizeScaleBaseUrl: invalid input returns null', () => {
+    assert.equal(normalizeScaleBaseUrl(null), null);
+    assert.equal(normalizeScaleBaseUrl(42), null);
+    assert.equal(normalizeScaleBaseUrl(''), null);
+    assert.equal(normalizeScaleBaseUrl('not a url'), null);
+    // 非 http/https 协议不接受。
+    assert.equal(normalizeScaleBaseUrl('ftp://api.example.com'), null);
+    assert.equal(normalizeScaleBaseUrl('file:///etc/passwd'), null);
+});
+
+// ---------- buildScaleTargetSet ----------
+
+test('buildScaleTargetSet: empty / non-array / all-invalid input returns null', () => {
+    assert.equal(buildScaleTargetSet([]), null);
+    assert.equal(buildScaleTargetSet(null), null);
+    assert.equal(buildScaleTargetSet('https://x'), null);
+    assert.equal(buildScaleTargetSet(['::bad::', 42]), null);
+});
+
+test('buildScaleTargetSet: valid items normalized into a Set, invalid dropped', () => {
+    const set = buildScaleTargetSet(['https://a.com/', 'https://b.com:9443/api', '::bad::']);
+    assert.ok(set instanceof Set);
+    assert.equal(set.size, 2);
+    assert.ok(set.has('https://a.com:443'));
+    assert.ok(set.has('https://b.com:9443/api'));
+});
+
+// ---------- isScaleTargetHit ----------
+
+test('isScaleTargetHit: empty target path covers all paths of the origin', () => {
+    const set = buildScaleTargetSet(['https://a.com']);
+    assert.ok(isScaleTargetHit('https://a.com:443', set));
+    assert.ok(isScaleTargetHit('https://a.com:443/anything', set));
+    assert.ok(isScaleTargetHit('https://a.com:443/api/v1', set));
+    assert.ok(!isScaleTargetHit('https://other.com:443', set));
+});
+
+test('isScaleTargetHit: segment-prefix match, cross-segment rejected', () => {
+    const set = buildScaleTargetSet(['https://a.com/api']);
+    assert.ok(isScaleTargetHit('https://a.com:443/api', set));
+    assert.ok(isScaleTargetHit('https://a.com:443/api/v2/messages', set));
+    assert.ok(!isScaleTargetHit('https://a.com:443', set));
+    assert.ok(!isScaleTargetHit('https://a.com:443/apiv2', set));
+    assert.ok(!isScaleTargetHit('https://a.com:443/api-x', set));
+});
+
+test('isScaleTargetHit: port and protocol must match exactly after normalization', () => {
+    const set = buildScaleTargetSet(['http://a.com:8080']);
+    assert.ok(isScaleTargetHit('http://a.com:8080/', set));
+    assert.ok(!isScaleTargetHit('http://a.com:80', set));
+    assert.ok(!isScaleTargetHit('https://a.com:443', set));
+});
+
+test('isScaleTargetHit: missing inputs never hit', () => {
+    const set = buildScaleTargetSet(['https://a.com']);
+    assert.ok(!isScaleTargetHit(null, set));
+    assert.ok(!isScaleTargetHit('', set));
+    assert.ok(!isScaleTargetHit('https://a.com:443', null));
 });

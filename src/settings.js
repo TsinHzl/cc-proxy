@@ -21,7 +21,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     // 用量展示缩放：开启后按 ratio 缩放返回客户端的 usage input 类字段
     // （output 不缩放），控制 Ctx% 显示与 auto-compact 触发时机。默认关闭
     // （上游是多少就是多少）；ratio 有限数 (0, 10]，非法回退 1.0。
-    usageScale: { enabled: false, ratio: 1.0 },
+    // baseUrls 为定向列表（默认 [] = 全量缩放）：非空时仅命中完整 base
+    // URL 的上游缩放，未命中 1:1 透传。
+    usageScale: { enabled: false, ratio: 1.0, baseUrls: [] },
     // 用量告警阈值：当日 tokens 超过 dailyTokens 时 CLI 启动提示 + 设置页红点。
     // 0 表示未配置（不告警）。dailyCost 为费用预算（美元，> 0 有效，0 = 未配置）。
     alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -91,6 +93,25 @@ function normalizeConfig(raw) {
         if (typeof us.ratio === 'number' && Number.isFinite(us.ratio)
             && us.ratio > 0 && us.ratio <= 10) {
             config.usageScale.ratio = us.ratio;
+        }
+        // 定向列表：逐项校验（字符串 + new URL 可解析 + http/https 协议），
+        // 非法项逐项丢弃（与 upstreams 风格一致），不整体回退。
+        if (Array.isArray(us.baseUrls)) {
+            const cleanBaseUrls = [];
+            for (const entry of us.baseUrls) {
+                if (typeof entry !== 'string') continue;
+                const value = entry.trim();
+                if (!value) continue;
+                try {
+                    const u = new URL(value);
+                    if (u.protocol === 'http:' || u.protocol === 'https:') {
+                        cleanBaseUrls.push(value);
+                    }
+                } catch {
+                    // 非法 URL 项逐项丢弃。
+                }
+            }
+            config.usageScale.baseUrls = cleanBaseUrls;
         }
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {

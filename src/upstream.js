@@ -59,7 +59,7 @@ function toEntry(item) {
  *     request; a bare target object is accepted for the single-upstream case
  * @param {(upstreamRes: http.IncomingMessage) => void} respond
  * @param {(err: Error) => void} onError
- * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string) => void, onProbe?: (upstreamName: string) => void}} [options]
+ * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string, toEntry?: {target: object, headers?: object, name?: string, base?: string}) => void, onProbe?: (upstreamName: string) => void}} [options]
  *     `onProbe`：某上游失败且请求即将切换到下一上游时上报（供熔断器记败）。
  *     末位上游的最终失败响应不经此上报——会原样交给 respond，由 proxy 按
  *     状态码归类，避免同一尝试重复计数。
@@ -79,9 +79,11 @@ export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onErr
             const next = entries[entryIdx + 1];
             logger.warn(`[cc-proxy] upstream ${labelOf(entry)} failed (${reason}), failing over to ${labelOf(next)}`);
             // 切换即视为当前上游本次尝试失败：先于 onFailover 上报（供熔断
-            // 器记败），再通知埋点侧切换统计归属。
+            // 器记败），再通知埋点侧切换统计归属。第 4 参数携带切换目标
+            // entry（含完整 base 等调用方附加字段），供定向缩放等需要完整
+            // base URL 的消费方使用；既有 3 参数回调不受影响。
             if (onProbe) onProbe(labelOf(entry));
-            if (onFailover) onFailover(labelOf(entry), labelOf(next), reason);
+            if (onFailover) onFailover(labelOf(entry), labelOf(next), reason, next);
             attempt(entryIdx + 1, RETRY_DELAYS_MS.length);
             return true;
         };
