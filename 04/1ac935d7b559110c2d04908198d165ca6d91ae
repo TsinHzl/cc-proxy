@@ -1,0 +1,43 @@
+test/base-url-match.test.mjs
+  44ec2c137c50ae62 6-8,86-162
+test/settings.test.mjs
+  44ec2c137c50ae62 141-192
+bin/settings-web.js
+  44ec2c137c50ae62 313-328,330-337,340-343,364-365,412-416,418-425
+bin/settings-page-targetlist.js
+  44ec2c137c50ae62 21-25,47-50,75-79,94,99,101-108,120,122-141,148,151,196-197,203-204,247-248,253-255
+README.md
+  44ec2c137c50ae62 136,160-163,173-174,177
+src/base-url-match.js
+  44ec2c137c50ae62 4-10,30-53,66,70,73-107
+src/proxy.js
+  44ec2c137c50ae62 18-20,257-265,367-369,371,403-411,440-472
+test/settings-web.test.mjs
+  44ec2c137c50ae62 41-43,1148-1149,1200-1335,2447-2530
+test/proxy-effort.test.mjs
+  44ec2c137c50ae62 278-506
+CLAUDE.md
+  44ec2c137c50ae62 27-29,44-45,47-48
+src/settings.js
+  44ec2c137c50ae62 7,55-70,75-101,109-110,137,154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "041ac935d7b559110c2d04908198d165ca6d91ae",
+  "prompts": {
+    "44ec2c137c50ae62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae46000e-8153-4ce1-a2ee-a2c834536dcc",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 1037,
+      "total_deletions": 124,
+      "accepted_lines": 1018,
+      "overriden_lines": 0
+    }
+  }
+}
