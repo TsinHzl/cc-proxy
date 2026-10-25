@@ -1,0 +1,55 @@
+test/upstream-failover.test.mjs
+  44ec2c137c50ae62 11,15-20,24,37,41,104-125
+test/usage-scale.test.mjs
+  44ec2c137c50ae62 6,157-158
+src/base-url-match.js
+  44ec2c137c50ae62 1-56
+bin/settings-page.js
+  44ec2c137c50ae62 8-14,138,188,218,448,468-469,476,482-483,492,741
+test/settings-web.test.mjs
+  44ec2c137c50ae62 34-40,354-359,1081-1195,1670,1691,1703,2249-2306
+src/proxy.js
+  44ec2c137c50ae62 13,15-19,208,212-214,238,241,243,254-260,308,310-311,314-315,361-366,395-406,433-446,464,521,688,691
+test/settings-cli.test.mjs
+  44ec2c137c50ae62 34,42
+src/usage-scale.js
+  44ec2c137c50ae62 91-93
+bin/settings-web.js
+  44ec2c137c50ae62 33,313-330,348-350,400
+test/base-url-match.test.mjs
+  44ec2c137c50ae62 1-84
+bin/settings-page-targetlist.js
+  44ec2c137c50ae62 1-218
+README.md
+  44ec2c137c50ae62 136,153-173
+test/proxy-effort.test.mjs
+  44ec2c137c50ae62 23-35,141-277
+src/upstream.js
+  44ec2c137c50ae62 59-62,65,77-79,89-90,96,99,105
+CLAUDE.md
+  44ec2c137c50ae62 27,42,44
+src/settings.js
+  44ec2c137c50ae62 17-19,54-73,77,104,121-122
+test/settings.test.mjs
+  44ec2c137c50ae62 12,77,101,109-138,168,181-192,200,577,585,599,613,627-628
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "cba20fa6802ecea324cb708ce91efff708982f0b",
+  "prompts": {
+    "44ec2c137c50ae62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae46000e-8153-4ce1-a2ee-a2c834536dcc",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 1078,
+      "total_deletions": 418,
+      "accepted_lines": 1060,
+      "overriden_lines": 0
+    }
+  }
+}
