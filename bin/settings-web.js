@@ -310,21 +310,37 @@ async function handleSessionRequest(context, req, res, url) {
     return true;
 }
 
-// baseUrls 数组校验（usageScale / effortOverride 共用）：字符串数组且逐项
-// trim 后非空、可 new URL 解析、协议限 http/https；数组内混入任一非法项整次
-// 提交判 400（设置页本地拦截为第一道防线，此处为兜底）。
+// 单值 base URL 校验：字符串且 trim 后非空、可 new URL 解析、协议限
+// http/https。usageScale / effortOverride 两个校验入口共用。
+function isHttpUrl(value) {
+    if (typeof value !== 'string') return false;
+    const text = value.trim();
+    if (!text) return false;
+    try {
+        const u = new URL(text);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
+
+// usageScale.baseUrls 校验：纯字符串数组；混入任一非法项整次提交判 400
+// （设置页本地拦截为第一道防线，此处为兜底）。
 function isValidBaseUrlArray(value) {
+    return Array.isArray(value) && value.every(isHttpUrl);
+}
+
+// effortOverride.baseUrls 校验：混合数组——字符串项须为合法 http(s) URL；
+// 对象项须为非数组对象、url 合法、level 若存在须 ∈ EFFORT_LEVELS。任一非法
+// 项整次提交判 400（与 settings.js cleanEffortTargets 同口径，差异在于此处
+// 判 400 而非静默丢弃）。
+function isValidEffortTargetArray(value) {
     if (!Array.isArray(value)) return false;
     return value.every((item) => {
-        if (typeof item !== 'string') return false;
-        const text = item.trim();
-        if (!text) return false;
-        try {
-            const u = new URL(text);
-            return u.protocol === 'http:' || u.protocol === 'https:';
-        } catch {
-            return false;
-        }
+        if (typeof item === 'string') return isHttpUrl(item);
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) return false;
+        if (!isHttpUrl(item.url)) return false;
+        return item.level === undefined || EFFORT_LEVELS.has(item.level);
     });
 }
 
@@ -345,10 +361,8 @@ function isValidSettingsPatch(body) {
         return typeof body.value === 'number' && Number.isFinite(body.value)
             && body.value > 0 && body.value <= 10;
     }
-    if (body.key === 'usageScale.baseUrls' || body.key === 'effortOverride.baseUrls') {
-        // 与 settings.js normalizeConfig 同口径（共用 isValidBaseUrlArray）。
-        return isValidBaseUrlArray(body.value);
-    }
+    if (body.key === 'usageScale.baseUrls') return isValidBaseUrlArray(body.value);
+    if (body.key === 'effortOverride.baseUrls') return isValidEffortTargetArray(body.value);
     return typeof body.value === 'boolean';
 }
 
@@ -395,11 +409,20 @@ async function handleSettingsPatch(context, req, res, host) {
         // 点号 key 展开为嵌套 partial（{ effortOverride: { level: value } }），
         // 顶层 key 直接映射，writeConfig 逐字段合并保留未提交字段。
         const [group, leaf] = body.key.split('.');
-        // baseUrls 在边界处归一（trim）：校验与落盘同口径，避免配置层二次
-        // 归一成为隐式契约。
-        const value = body.key.endsWith('.baseUrls')
+        // baseUrls 在边界处按 group 归一：usageScale 为纯字符串数组，逐项
+        // trim；effortOverride 为混合数组，字符串项 trim，对象项只保留
+        // url / level 两键（丢弃 level 缺失时的 undefined 键，避免落盘出现
+        // 空档位字段），与 settings.js cleanEffortTargets 的落盘口径一致。
+        const value = body.key === 'usageScale.baseUrls'
             ? body.value.map((item) => item.trim())
-            : body.value;
+            : body.key === 'effortOverride.baseUrls'
+                ? body.value.map((item) => {
+                    if (typeof item === 'string') return item.trim();
+                    return item.level === undefined
+                        ? { url: item.url.trim() }
+                        : { url: item.url.trim(), level: item.level };
+                })
+                : body.value;
         const patch = leaf
             ? { [group]: { [leaf]: value } }
             : { [body.key]: value };

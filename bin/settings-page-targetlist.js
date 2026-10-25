@@ -18,7 +18,11 @@ export const EFFORT_TARGET_LIST = {
     key: 'effort',
     group: 'effortOverride',
     title: '目标上游 Base URL（留空 = 对所有上游覆写）',
-    hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时覆写 effort 档位；未配置时对所有上游生效。修改后下次启动会话生效。'
+    hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时覆写 effort 档位；未配置时对所有上游生效。'
+        + '每行可选档位：「继承全局」表示用上方全局档位；多条命中时路径更长（更具体）的条目录生效。'
+        + '修改后下次启动会话生效。',
+    // 行内档位下拉的枚举：空值 = 继承全局档位（提交为纯字符串形态）。
+    levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
 };
 
 export const TARGET_LISTS = [SCALE_TARGET_LIST, EFFORT_TARGET_LIST];
@@ -40,6 +44,10 @@ const TARGET_LIST_STYLES = `
 .target-remove { flex: 0 0 auto; padding: 0 10px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
 .target-remove:hover:not(:disabled) { border-color: var(--error); color: var(--error); }
 .target-remove:disabled { cursor: wait; opacity: .62; }
+.target-level { flex: 0 0 auto; height: 28px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); color: var(--text); font: inherit; font-size: 12px; }
+.target-level:hover:not(:disabled) { border-color: var(--accent); }
+.target-level:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.target-level:disabled { cursor: wait; opacity: .62; }
 .targets-hint { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
 `;
 
@@ -64,7 +72,11 @@ export function buildTargetListHtml(list) {
 // 列表脚本片段：与主脚本共享同一 IIFE 闭包（document / show / patchSetting /
 // setDisabled / saving / leaseActive / authoritativeSnapshot / applySettings）。
 export function buildTargetListScript(lists) {
-    const spec = JSON.stringify(lists.map((item) => ({ key: item.key, group: item.group })));
+    const spec = JSON.stringify(lists.map((item) => ({
+        key: item.key,
+        group: item.group,
+        levels: item.levels ?? null
+    })));
     return `
     // 定向目标上游列表：动态行增删 + blur 时全量提交 <group>.baseUrls。
     // rows 以内部数组跟踪（不依赖 DOM 查询），行元素为 [input, remove]。
@@ -79,14 +91,21 @@ export function buildTargetListScript(lists) {
             if (addEl) addEl.disabled = disabled;
             for (const entry of rows) {
                 entry.input.disabled = disabled;
+                if (entry.levelSelect) entry.levelSelect.disabled = disabled;
                 entry.remove.disabled = disabled;
             }
         }
 
+        // 产出混合形态：档位为空 → 纯字符串（继承全局），否则 { url, level }。
         function currentValues() {
-            return rows
-                .map((entry) => entry.input.value.trim())
-                .filter(Boolean);
+            const values = [];
+            for (const entry of rows) {
+                const url = entry.input.value.trim();
+                if (!url) continue;
+                const level = entry.levelSelect ? entry.levelSelect.value : '';
+                values.push(level ? { url, level } : url);
+            }
+            return values;
         }
 
         function addRow(value) {
@@ -98,17 +117,38 @@ export function buildTargetListScript(lists) {
             input.className = 'target-url';
             // 占位符不写完整协议字面量：设置页禁止任何外部 URL 样式文本（测试约束）。
             input.placeholder = '输入 Base URL（含协议）';
-            input.value = value || '';
+            input.value = (value && typeof value === 'object' ? value.url : value) || '';
             input.setAttribute('aria-label', '目标上游 Base URL');
+            // 档位下拉仅在该列表声明 levels 时创建（usageScale 列表保持单列）。
+            let levelSelect = null;
+            if (spec.levels) {
+                levelSelect = document.createElement('select');
+                levelSelect.className = 'target-level';
+                levelSelect.setAttribute('aria-label', '该上游的 Effort 档位');
+                const inherit = document.createElement('option');
+                inherit.value = '';
+                inherit.textContent = '继承全局';
+                levelSelect.appendChild(inherit);
+                for (const level of spec.levels) {
+                    const option = document.createElement('option');
+                    option.value = level;
+                    option.textContent = level;
+                    levelSelect.appendChild(option);
+                }
+                // 对象输入（{ url, level }）回填档位；字符串输入即「继承全局」。
+                levelSelect.value = (value && typeof value === 'object' ? value.level : '') || '';
+                levelSelect.addEventListener('change', () => submit());
+            }
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'target-remove';
             remove.textContent = '删除';
             remove.setAttribute('aria-label', '删除该目标上游');
             row.appendChild(input);
+            if (levelSelect) row.appendChild(levelSelect);
             row.appendChild(remove);
             listEl.appendChild(row);
-            const entry = { row, input, remove };
+            const entry = { row, input, levelSelect, remove };
             rows.push(entry);
             input.addEventListener('blur', () => submit());
             // pointerdown 仅阻止焦点转移（避免输入框 blur 提交把按钮置 disabled
@@ -153,16 +193,15 @@ export function buildTargetListScript(lists) {
             // 此时 blur 不应再发起请求（否则失败提示会覆盖「连接已断开」）。
             if (saving || !leaseActive) return;
             const values = currentValues();
-            if (!values.every(isUrl)) {
+            // 条目可能为对象形态，取 URL 侧校验。
+            if (!values.every((item) => isUrl(typeof item === 'string' ? item : item.url))) {
                 show('目标上游须为 http(s) URL', true);
                 render(authoritativeSnapshot?.[spec.group]?.baseUrls ?? []);
                 return;
             }
             const snapshot = authoritativeSnapshot?.[spec.group]?.baseUrls ?? [];
-            if (values.length === snapshot.length
-                && values.every((value, index) => value === snapshot[index])) {
-                return;
-            }
+            // 数组含对象后逐项 === 比较失效，改序列化比较（同序同值即无变化）。
+            if (JSON.stringify(values) === JSON.stringify(snapshot)) return;
             saving = true;
             setDisabled(true);
             try {
@@ -205,12 +244,15 @@ export function buildTargetListScript(lists) {
         }
     }
 
-    // 权威快照的 baseUrls 部分：group → 数组副本（防后续原地改写入快照）。
+    // 权威快照的 baseUrls 部分：group → 数组副本（条目可能为对象，逐项浅拷贝，
+// 防后续原地改写入快照）。
     function targetListSnapshot(data) {
         const snapshot = {};
         for (const item of targetListEntries) {
             const baseUrls = data?.[item.group]?.baseUrls;
-            snapshot[item.group] = Array.isArray(baseUrls) ? [...baseUrls] : [];
+            snapshot[item.group] = Array.isArray(baseUrls)
+                ? baseUrls.map((entry) => (entry && typeof entry === 'object' ? { ...entry } : entry))
+                : [];
         }
         return snapshot;
     }

@@ -38,6 +38,9 @@ test('page: renders dark settings page with exactly five switches', () => {
     assert.match(html, /id="effortTargetAdd"/);
     assert.match(html, /留空 = 对所有上游缩放/);
     assert.match(html, /留空 = 对所有上游覆写/);
+    // Effort 列表额外说明：档位继承语义与多条命中的仲裁规则。
+    assert.match(html, /继承全局/);
+    assert.match(html, /路径更长（更具体）的条目录生效/);
     assert.match(html, /<option value="low">/);
     assert.match(html, /<option value="medium">/);
     assert.match(html, /<option value="high">/);
@@ -1142,7 +1145,8 @@ test('page script: effort target list renders, adds, removes and submits baseUrl
         ['https://a.com/api', 'http://b.com:8080', 'https://c.com']);
 
     // 删除首行：提交剩余两项（两个列表各自独立提交，互不影响）。
-    const firstRemove = page.elements.effortTargetList.children[0].options[1];
+    // 行元素顺序为 [URL input, 档位 select, 删除按钮]。
+    const firstRemove = page.elements.effortTargetList.children[0].options[2];
     await firstRemove.dispatch('pointerdown');
     await firstRemove.dispatch('click');
     await flushPageMicrotasks();
@@ -1191,6 +1195,142 @@ test('page script: invalid effort target URL blocks submit and rolls back', asyn
         page.elements.effortTargetList.children[0].options[0].value,
         'https://a.com'
     );
+});
+
+test('page script: effort target row renders level select, object entries preselect level', async (t) => {
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') return pageJsonResponse(200, { ok: true, data: {} });
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: {
+                    enabled: true, level: 'high',
+                    // 混合形态：字符串 = 继承全局；对象 = 显式档位。
+                    baseUrls: ['https://a.com/api', { url: 'https://b.com', level: 'max' }]
+                },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    const rows = page.elements.effortTargetList.children;
+    assert.equal(rows.length, 2);
+    // 每行含档位下拉：1 个「继承全局」+ 6 档。
+    const firstLevel = rows[0].options[1];
+    assert.equal(firstLevel.options.length, 7);
+    assert.equal(firstLevel.options[0].value, '');
+    assert.equal(firstLevel.options[0].textContent, '继承全局');
+    assert.deepEqual(
+        firstLevel.options.slice(1).map((option) => option.value),
+        ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+    );
+    // 字符串条目 → 继承全局（空值）；对象条目 → 预选其档位。
+    assert.equal(firstLevel.value, '');
+    assert.equal(rows[1].options[1].value, 'max');
+    // usageScale 列表无档位下拉（行元素仅 [input, 删除按钮]）。
+    assert.equal(page.elements.scaleTargetList.children.length, 0);
+});
+
+test('page script: effort level change submits object form; empty submits string form', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            const body = JSON.parse(options.body);
+            patched.push(body);
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: {
+                        enabled: true, level: 'high', baseUrls: body.value
+                    },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: {
+                    enabled: true, level: 'high',
+                    baseUrls: ['https://a.com', { url: 'https://b.com', level: 'low' }]
+                },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 0);
+
+    // 第二行档位由 low 改为 max：change 触发全量提交，该项转为对象形态。
+    const level = page.elements.effortTargetList.children[1].options[1];
+    level.value = 'max';
+    await level.dispatch('change');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 1);
+    assert.equal(patched[0].key, 'effortOverride.baseUrls');
+    assert.deepEqual(patched[0].value, ['https://a.com', { url: 'https://b.com', level: 'max' }]);
+
+    // 首行档位选回「继承全局」（空值）：该项退回纯字符串形态。
+    const firstLevel = page.elements.effortTargetList.children[0].options[1];
+    firstLevel.value = 'ultracode';
+    await firstLevel.dispatch('change');
+    await flushPageMicrotasks();
+    assert.deepEqual(patched[1].value,
+        [{ url: 'https://a.com', level: 'ultracode' }, { url: 'https://b.com', level: 'max' }]);
+});
+
+test('page script: usageScale target rows have no level select', async (t) => {
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') return pageJsonResponse(200, { ok: true, data: {} });
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: true, ratio: 0.5, baseUrls: ['https://a.com'] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    const row = page.elements.scaleTargetList.children[0];
+    // 仅 [URL input, 删除按钮] 两个子元素，删除按钮位于 options[1]。
+    assert.equal(row.options.length, 2);
+    assert.equal(row.options[0].className, 'target-url');
+    assert.equal(row.options[1].className, 'target-remove');
 });
 
 async function startApi({
@@ -2302,6 +2442,90 @@ test('API: PATCH effortOverride.baseUrls writes trimmed array, invalid rejected'
         assert.equal(response.status, 400, body);
     }
     assert.equal(writes, writesBefore);
+});
+
+test('API: PATCH effortOverride.baseUrls accepts mixed string / object entries', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({ effortOverride: { enabled: true, level: 'high', baseUrls: [] } }),
+        write: (partial) => {
+            update = partial;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    const response = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            key: 'effortOverride.baseUrls',
+            value: [
+                ' https://a.com ',
+                { url: ' https://b.com ', level: 'max' },
+                // level 缺失：对象项只保留 url 键（丢弃 undefined 空档位字段）。
+                { url: 'https://c.com' }
+            ]
+        })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(update, {
+        effortOverride: {
+            baseUrls: [
+                'https://a.com',
+                { url: 'https://b.com', level: 'max' },
+                { url: 'https://c.com' }
+            ]
+        }
+    });
+
+    // 边界归一后经 settings.js 层去重：尾斜杠归一为同一 URL，保留首项形态。
+    const dedupe = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            key: 'effortOverride.baseUrls',
+            value: ['https://a.com', { url: 'https://a.com/', level: 'max' }]
+        })
+    });
+    assert.equal(dedupe.status, 200);
+    assert.deepEqual(update.effortOverride.baseUrls,
+        ['https://a.com', { url: 'https://a.com/', level: 'max' }]);
+});
+
+test('API: PATCH effortOverride.baseUrls rejects invalid mixed entry shapes with 400', async (t) => {
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({ effortOverride: { enabled: true, level: 'high', baseUrls: [] } }),
+        write: () => {
+            writes += 1;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    for (const body of [
+        // 项为非字符串非对象（数组亦不接受）。
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [[{ url: 'https://a.com' }]] }),
+        // 对象缺 url / url 非法 / url 非字符串。
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ level: 'max' }] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ url: 'not a url' }] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ url: 42 }] }),
+        // url 非 http(s) 协议。
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ url: 'ftp://a.com' }] }),
+        // level 存在但非枚举（含 null 与大小写不同）。
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ url: 'https://a.com', level: 'bogus' }] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ url: 'https://a.com', level: null }] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [{ url: 'https://a.com', level: 'HIGH' }] })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, 0);
 });
 
 test('API: GET captured-system-prompt returns captured text or null', async (t) => {

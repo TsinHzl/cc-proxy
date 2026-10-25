@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
     normalizeBaseUrl,
     buildBaseUrlTargetSet,
-    isBaseUrlTargetHit
+    isBaseUrlTargetHit,
+    buildBaseUrlTargetEntries,
+    resolveBaseUrlTargetValue
 } from '../src/base-url-match.js';
 
 // 本模块为定向匹配的单一实现，usageScale 与 effortOverride 两个定向特性
@@ -81,4 +83,81 @@ test('isBaseUrlTargetHit: missing inputs never hit', () => {
     assert.ok(!isBaseUrlTargetHit(null, set));
     assert.ok(!isBaseUrlTargetHit('', set));
     assert.ok(!isBaseUrlTargetHit('https://a.com:443', null));
+});
+
+// ---------- buildBaseUrlTargetEntries / resolveBaseUrlTargetValue ----------
+// 条目形态供 effortOverride 使用：命中后还要取该条目自带的档位值。
+
+test('buildBaseUrlTargetEntries: empty / non-array / all-invalid input returns null', () => {
+    assert.equal(buildBaseUrlTargetEntries([]), null);
+    assert.equal(buildBaseUrlTargetEntries(null), null);
+    assert.equal(buildBaseUrlTargetEntries([{ url: '::bad::' }, { url: 42 }]), null);
+});
+
+test('buildBaseUrlTargetEntries: sorted by path length descending (longest prefix first)', () => {
+    const entries = buildBaseUrlTargetEntries([
+        { url: 'https://a.com', value: 'low' },
+        { url: 'https://a.com/api/v2', value: 'max' },
+        { url: 'https://a.com/api', value: 'high' }
+    ]);
+    assert.deepEqual(entries.map((e) => e.base), [
+        'https://a.com:443/api/v2',
+        'https://a.com:443/api',
+        'https://a.com:443'
+    ]);
+});
+
+test('buildBaseUrlTargetEntries: duplicate normalized URL keeps first occurrence value', () => {
+    // 尾斜杠归一后视为同一 URL：后项的 'max' 被丢弃，保留首项的 null。
+    const entries = buildBaseUrlTargetEntries([
+        { url: 'https://a.com', value: null },
+        { url: 'https://a.com/', value: 'max' }
+    ]);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].base, 'https://a.com:443');
+    assert.equal(entries[0].value, null);
+});
+
+test('buildBaseUrlTargetEntries: undefined value normalized to null', () => {
+    const entries = buildBaseUrlTargetEntries([{ url: 'https://a.com' }]);
+    assert.equal(entries[0].value, null);
+});
+
+test('resolveBaseUrlTargetValue: longest prefix wins, three-state result', () => {
+    const entries = buildBaseUrlTargetEntries([
+        { url: 'https://a.com', value: 'low' },
+        { url: 'https://a.com/api', value: 'max' }
+    ]);
+    // 最长前缀优先：/api/v2 命中更深层的 /api 条目。
+    assert.equal(resolveBaseUrlTargetValue('https://a.com:443/api/v2', entries), 'max');
+    // 更浅路径回落浅层条目。
+    assert.equal(resolveBaseUrlTargetValue('https://a.com:443/other', entries), 'low');
+    // 未命中 → undefined（调用方不覆写）。
+    assert.equal(resolveBaseUrlTargetValue('https://b.com:443', entries), undefined);
+    // 命中但条目未指定值 → null（调用方回退全局值）。
+    const unspecified = buildBaseUrlTargetEntries([{ url: 'https://a.com' }]);
+    assert.equal(resolveBaseUrlTargetValue('https://a.com:443/x', unspecified), null);
+});
+
+test('resolveBaseUrlTargetValue: missing inputs never hit', () => {
+    const entries = buildBaseUrlTargetEntries([{ url: 'https://a.com', value: 'low' }]);
+    assert.equal(resolveBaseUrlTargetValue(null, entries), undefined);
+    assert.equal(resolveBaseUrlTargetValue('', entries), undefined);
+    assert.equal(resolveBaseUrlTargetValue('https://a.com:443', null), undefined);
+});
+
+test('entry form and set form agree on hit semantics', () => {
+    const urls = ['https://a.com', 'https://a.com/api', 'http://b.com:8080'];
+    const set = buildBaseUrlTargetSet(urls);
+    const entries = buildBaseUrlTargetEntries(urls.map((url) => ({ url })));
+    const bases = [
+        'https://a.com:443', 'https://a.com:443/api', 'https://a.com:443/api/v1',
+        'https://a.com:443/apiv2', 'https://a.com:443/api-x',
+        'http://b.com:8080/x', 'http://b.com:80', 'https://c.com:443'
+    ];
+    for (const base of bases) {
+        assert.equal(isBaseUrlTargetHit(base, set),
+            resolveBaseUrlTargetValue(base, entries) !== undefined,
+            `hit semantics diverged for ${base}`);
+    }
 });

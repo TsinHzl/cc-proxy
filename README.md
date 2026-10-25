@@ -133,7 +133,7 @@ cc-proxy --setting
 
 - `Suggestion Mode 输入建议转发`：默认关闭；开启后把输入建议请求转发上游并额外消耗 token。
 - `思考内容文本化展示`：默认开启；关闭后恢复 Claude Code 原生折叠 Thinking 块。
-- `Effort 覆写`：默认开启（high）；开启后所有请求均以所选档位转发，可配置目标上游列表仅对特定上游生效（详见下方小节）。
+- `Effort 覆写`：默认开启（high）；开启后所有请求均以所选档位转发，可配置目标上游列表仅对特定上游生效，且每个目标上游可各配自己的档位（详见下方小节）。
 - `系统提示词覆写`：默认关闭；开启后所有请求的 system 提示词被替换为输入框内容。
 - `用量展示缩放`：默认关闭；开启后按比例缩放返回给 Claude Code 的上下文用量（详见下方小节）。
 
@@ -157,7 +157,10 @@ cc-proxy --setting
   "effortOverride": {
     "enabled": true,
     "level": "high",
-    "baseUrls": ["https://gateway.example.com/api"]
+    "baseUrls": [
+      "https://a.example.com",
+      { "url": "https://gateway.example.com/api", "level": "max" }
+    ]
   }
 }
 ```
@@ -167,9 +170,11 @@ Claude Code 会按本地设置发送 effort 档位（`output_config.effort`，�
 - **默认开启且为 high**：出厂即为 `enabled: true` / `level: high`，即未配置也统一以 high 转发；关闭后按字节透传，恢复 CC 本地档位。
 - **档位可选**：`low` / `medium` / `high` / `xhigh` / `max` / `ultracode`；非法值回退 `high`。
 - **定向覆写（`baseUrls`）**：默认 `[]`，此时开启即对**所有**上游覆写。配置非空列表后，仅当本请求**将要命中的上游**完整 base URL 匹配列表项时该上游收到覆写后的请求体，其余上游按未覆写的请求体转发（等效覆写关闭）。匹配规则与「用量展示缩放」完全一致：协议 + host + 端口（缺省端口按 http→80 / https→443 归一）须完全一致，路径按**段前缀**匹配（配置 `/api` 命中 `/api` 与 `/api/x`，不命中 `/apiv2`；配置空路径覆盖该 origin 全部路径）；尾斜杠自动归一。多上游故障转移时**按每个候选上游逐个判定**：切换到命中列表的上游即收到覆写体，切换到未命中的上游则收到原始体。设置页「Effort 覆写」区块提供目标上游动态列表（添加 / 删除 / 失焦保存），非法 URL 本地拦截不提交。
+- **每条目独立档位**：`baseUrls` 的列表项有两种形态，可在同一数组中混用——纯字符串（如 `"https://a.example.com"`）表示**该条目继承全局 `level`**；对象 `{ "url": ..., "level": ... }` 表示该上游使用自己的档位。上例中 `gateway.example.com/api` 收到 `max`，`a.example.com` 收到全局的 `high`，未命中的上游保留 CC 本地档位。设置页每行提供档位下拉，「继承全局」即对应字符串形态。
+- **多条命中时更具体者胜出**：同一上游可能同时命中多条（如同时配置 `https://a.com` 与 `https://a.com/api`），此时**路径更长（更具体）的条目录生效**——上游 `https://a.com/api/x` 取 `/api` 条目的档位，`https://a.com/other` 取 `a.com` 条目的档位。同一 URL 只计一次（尾斜杠等归一后视为重复，保留先出现的条目）。
 - **仅影响 Claude Code 请求**：非 CC 客户端、非 JSON body 一律原样透传。
 - **重启生效**：配置在代理启动时读取一次，切换后需下次会话生效。
-- **配置容错**：手改 `config.json` 时 `baseUrls` 非法项（不可解析或非 http/https）逐项丢弃；若**全部**项均非法，列表退化为空 → 等效全量覆写，请留意。
+- **配置容错**：手改 `config.json` 时非法项（字符串不可解析或非 http/https；对象的 `url` 非法，或 `level` 非枚举）逐项丢弃；对象缺 `level` 或 `level` 非法时该条归一为字符串形态（即继承全局档位）；若**全部**项均非法，列表退化为空 → 等效全量覆写，请留意。旧版 `["https://a.com"]` 纯字符串配置无需迁移，语义等同「全部继承全局档位」。
 
 #### 用量展示缩放
 

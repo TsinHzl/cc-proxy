@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { normalizeBaseUrl } from './base-url-match.js';
 
 export const DEFAULT_CONFIG = Object.freeze({
     thinkingWindow: { enabled: false, lines: 10 },
@@ -51,22 +52,53 @@ export function defaultConfigPath() {
     return path.join(os.homedir(), '.cc-proxy', 'config.json');
 }
 
-// baseUrls 逐项校验（usageScale / effortOverride 共用）：字符串 + trim 非空 +
-// `new URL` 可解析 + http/https 协议，非法项逐项丢弃（与 upstreams 风格一致），
-// 不整体回退；非数组（含 undefined）归一为空列表。
+// 单值 base URL 校验：trim 非空 + `new URL` 可解析 + http/https 协议；
+// 合法返回 trim 后的字符串，非法返回 null。usageScale / effortOverride 共用。
+function cleanBaseUrl(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (!text) return null;
+    try {
+        const u = new URL(text);
+        return u.protocol === 'http:' || u.protocol === 'https:' ? text : null;
+    } catch {
+        return null;
+    }
+}
+
+// usageScale 的 baseUrls 逐项校验：纯字符串数组，非法项逐项丢弃（与 upstreams
+// 风格一致），不整体回退；非数组（含 undefined）归一为空列表。
 function cleanBaseUrls(input) {
     if (!Array.isArray(input)) return [];
     const clean = [];
     for (const entry of input) {
-        if (typeof entry !== 'string') continue;
-        const value = entry.trim();
-        if (!value) continue;
-        try {
-            const u = new URL(value);
-            if (u.protocol === 'http:' || u.protocol === 'https:') clean.push(value);
-        } catch {
-            // 非法 URL 项逐项丢弃。
-        }
+        const value = cleanBaseUrl(entry);
+        if (value !== null) clean.push(value);
+    }
+    return clean;
+}
+
+// effortOverride.baseUrls 逐项校验，条目为混合形态：
+// - 字符串且 URL 合法 → 保留字符串（语义：继承全局档位）
+// - 对象且 url 合法 → level ∈ EFFORT_LEVELS 时保留 { url, level }；level 缺失
+//   或非法则归一为纯字符串（「未指定档位」只有字符串一种存储表达）
+// - 其余（非字符串非对象、url 非法）逐项丢弃；非数组归一为空列表
+// - 去重：以 normalizeBaseUrl 规范串判重，已出现过的一律跳过并保留首次出现的
+//   形态与档位（故 "https://a.com" 与 "https://a.com/"、以及字符串与对象形态
+//   指向同一 URL 均判为重复）——否则路径长度相同时，排序稳定性会成为隐式的
+//   档位胜出规则。
+function cleanEffortTargets(input) {
+    if (!Array.isArray(input)) return [];
+    const seen = new Set();
+    const clean = [];
+    for (const entry of input) {
+        const isObject = entry !== null && typeof entry === 'object' && !Array.isArray(entry);
+        const url = cleanBaseUrl(isObject ? entry.url : entry);
+        if (url === null) continue;
+        const key = normalizeBaseUrl(url);
+        if (key === null || seen.has(key)) continue;
+        seen.add(key);
+        clean.push(isObject && EFFORT_LEVELS.has(entry.level) ? { url, level: entry.level } : url);
     }
     return clean;
 }
@@ -74,7 +106,8 @@ function cleanBaseUrls(input) {
 // 行数非法（非整数、<1 或 >100）回退默认 10；enabled / forwardSuggestionMode
 // 非布尔回退 false（默认拦截建议请求）；effortOverride.enabled 非布尔回退 true，
 // level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）；
-// effortOverride.baseUrls 与 usageScale.baseUrls 同口径逐项校验（非法项丢弃）；
+// effortOverride.baseUrls 走 cleanEffortTargets（混合形态 + 规范串去重），
+// usageScale.baseUrls 走 cleanBaseUrls（纯字符串逐项校验），两者非法项均丢弃；
 // systemPromptOverride.enabled 非布尔回退 false，prompt 非字符串或超 256KB 回退 ''。
 function normalizeConfig(raw) {
     const config = {
@@ -101,7 +134,7 @@ function normalizeConfig(raw) {
     if (eo && typeof eo === 'object' && !Array.isArray(eo)) {
         if (typeof eo.enabled === 'boolean') config.effortOverride.enabled = eo.enabled;
         if (EFFORT_LEVELS.has(eo.level)) config.effortOverride.level = eo.level;
-        config.effortOverride.baseUrls = cleanBaseUrls(eo.baseUrls);
+        config.effortOverride.baseUrls = cleanEffortTargets(eo.baseUrls);
     }
     const spo = raw.systemPromptOverride;
     if (spo && typeof spo === 'object' && !Array.isArray(spo)) {
@@ -118,7 +151,7 @@ function normalizeConfig(raw) {
             && us.ratio > 0 && us.ratio <= 10) {
             config.usageScale.ratio = us.ratio;
         }
-        // 定向列表：与 effortOverride.baseUrls 共用同一逐项校验口径。
+        // 定向列表：纯字符串形态（唯一形态，不携带比例），逐项校验。
         config.usageScale.baseUrls = cleanBaseUrls(us.baseUrls);
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {

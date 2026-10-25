@@ -24,7 +24,9 @@ bin/claude-proxy.js   CLI 入口：--version / --setting / 起代理 → 注入 
         │
 src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处理
   ├─ src/upstream.js          上游地址解析（ANTHROPIC_BASE_URL 或官方 API）与转发
-  ├─ src/base-url-match.js    定向匹配原语（base URL 规范化 + 命中判定，usageScale / effortOverride 共用）
+  ├─ src/base-url-match.js    定向匹配原语（base URL 规范化 + 命中判定；Set 形态供 usageScale、
+  │                            条目形态 buildBaseUrlTargetEntries / resolveBaseUrlTargetValue 供
+  │                            effortOverride 取条目档位，含规范串去重与路径长度降序）
   ├─ src/upstream-breaker.js  上游熔断器（连续失败≥3 → open 跳过 → 30s 冷却 half-open 探测恢复）
   ├─ src/upstream-health.js   上游健康统计（滚动窗口成功率）→ ~/.cc-proxy/runtime/upstream-health.json
   ├─ src/thinking-text.js     thinking→text 流式改写（核心特性）
@@ -39,9 +41,11 @@ src/proxy.js          HTTP 代理核心：请求/响应改写、SSE 事件级处
   └─ src/logger.js            静默日志（见下方关键约束）
 bin/settings-web.js   cc-proxy --setting：本地 Web 设置页 + 受保护 API
   ├─ bin/settings-page.js     设置页 HTML（模板 + 内联脚本，bootstrap nonce 注入）
-  ├─ bin/settings-page-targetlist.js     定向目标上游列表工厂（usageScale / effortOverride 共用）
+  ├─ bin/settings-page-targetlist.js     定向目标上游列表工厂（usageScale / effortOverride 共用；
+  │                                        列表描述带 levels 时每行渲染档位下拉）
   └─ bin/settings-session.js  SSE 租约生命周期（页面全关 2s 后退出等）
-src/settings.js       ~/.cc-proxy/config.json 读写（缺失/损坏回退默认值；baseUrls 逐项校验共用）
+src/settings.js       ~/.cc-proxy/config.json 读写（缺失/损坏回退默认值；effortOverride.baseUrls 走
+                      cleanEffortTargets 混合形态校验 + 规范串去重，usageScale.baseUrls 走 cleanBaseUrls）
 ```
 
 数据流：UA 匹配 `claude-cli`/`claude-code` 的 SSE 流中，thinking 块被改写为 `> 💭 Thinking` dim blockquote 文本流（移植自 agy-cc-proxy）；多轮请求中已渲染的历史思考文本在转发前剥离，防止上下文膨胀。非 CC 客户端、非 SSE、非 message JSON 流量一律原样透传。

@@ -138,6 +138,58 @@ test('readConfig: invalid effortOverride.baseUrls items dropped individually', (
     }
 });
 
+test('readConfig: effortOverride.baseUrls accepts mixed string / object entries', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: { baseUrls: [
+            'https://a.com',
+            { url: 'https://b.com', level: 'max' },
+            { url: 'https://c.com' },                  // level 缺失 → 归一为字符串
+            { url: 'https://d.com', level: 'bogus' },  // level 非法 → 归一为字符串
+            { url: '::bad::', level: 'max' },          // url 非法 → 丢弃
+            { level: 'max' },                          // 缺 url → 丢弃
+            42,                                        // 非字符串非对象 → 丢弃
+            ['https://e.com'],                         // 数组 → 丢弃
+            ''                                         // 空串 → 丢弃
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride.baseUrls, [
+        'https://a.com',
+        { url: 'https://b.com', level: 'max' },
+        'https://c.com',
+        'https://d.com'
+    ]);
+});
+
+test('readConfig: effortOverride.baseUrls dedupes by normalized URL, keeping first entry', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: { baseUrls: [
+            'https://a.com',
+            { url: 'https://a.com/', level: 'max' },    // 尾斜杠归一后重复 → 丢弃
+            { url: 'https://a.com:443', level: 'low' }, // 同规范串（缺省端口归一）→ 丢弃
+            { url: 'http://a.com', level: 'low' },      // 协议不同 → 保留
+            { url: 'https://a.com/api', level: 'low' }  // 路径不同 → 保留
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride.baseUrls, [
+        'https://a.com',
+        { url: 'http://a.com', level: 'low' },
+        { url: 'https://a.com/api', level: 'low' }
+    ]);
+});
+
+test('readConfig: legacy string[] effortOverride.baseUrls stays equivalent', (t) => {
+    // 旧配置读入后语义不变：全部条目为字符串 = 全部继承全局档位。
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: { enabled: true, level: 'low', baseUrls: ['https://a.com', 'https://b.com'] }
+    }));
+    const config = readConfig(dir);
+    assert.deepEqual(config.effortOverride.baseUrls, ['https://a.com', 'https://b.com']);
+    assert.equal(config.effortOverride.level, 'low');
+});
+
 test('readConfig: invalid effortOverride fields fall back field-by-field', (t) => {
     const dir = tmpDir(t);
     for (const enabled of [null, 0, 1, 'false', []]) {
