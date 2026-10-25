@@ -1,0 +1,25 @@
+README.en.md
+  44ec2c137c50ae62 74-76,142-143,145-295,306-308,346-351,353-364,375-381,385-386,393-427,447,454-462,466-469,472,474-475,477,479
+README.md
+  44ec2c137c50ae62 70-71,133,141-148,256,258-259,263,267-268,275-289,306,313-319,326-328,331,333-334,336,338
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "0ef03c186471ce1b80c7059f73971c29d1d82412",
+  "prompts": {
+    "44ec2c137c50ae62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae46000e-8153-4ce1-a2ee-a2c834536dcc",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 291,
+      "total_deletions": 42,
+      "accepted_lines": 291,
+      "overriden_lines": 0
+    }
+  }
+}
