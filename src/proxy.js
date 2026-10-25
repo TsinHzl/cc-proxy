@@ -15,7 +15,9 @@ import {
 import {
     normalizeBaseUrl,
     buildBaseUrlTargetSet,
-    isBaseUrlTargetHit
+    isBaseUrlTargetHit,
+    buildBaseUrlTargetEntries,
+    resolveBaseUrlTargetValue
 } from './base-url-match.js';
 import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
@@ -252,11 +254,15 @@ export function createProxyServer({
     const scaleTargetSet = usageScaleRatio === null
         ? null
         : buildBaseUrlTargetSet(usageScale.baseUrls);
-    // Effort 覆写定向列表：enabled 非 true 时不构造（保持 null），请求侧
-    // overrideBody 亦为 null，走单体路径零行为变化。null 表示未配置 / 全部
-    // 非法（等效空列表 → 全量覆写）。
-    const effortTargetSet = effortOverride?.enabled === true
-        ? buildBaseUrlTargetSet(effortOverride.baseUrls)
+    // Effort 覆写定向条目：enabled 非 true 时不构造（保持 null），请求侧
+    // 不做任何覆写，走单体路径零行为变化。null 表示未配置 / 全部非法
+    // （等效空列表 → 全量覆写）。条目自带档位（value），null 表示该条目
+    // 未指定档位 → 回退全局 effortOverride.level。
+    const effortTargets = effortOverride?.enabled === true
+        ? buildBaseUrlTargetEntries((effortOverride.baseUrls ?? []).map((entry) => ({
+            url: typeof entry === 'string' ? entry : entry.url,
+            value: typeof entry === 'string' ? null : entry.level ?? null
+        })))
         : null;
     // 熔断器：未注入时创建默认实例（3 连败 / 30s 冷却）；无备用上游时不创建，
     // 选路层零开销（单上游无熔断意义，保持透传路径最简）。
@@ -358,12 +364,11 @@ export function createProxyServer({
 
             // Request-side history strip (CC UA only).
             let body = bodyBuffer;
-            // Effort 覆写定向化的两个请求体变体：
-            // baseBody = 未叠加 Effort 覆写的基准体（历史剥离 + 系统提示词覆写后），
-            // overrideBody = 叠加 Effort 覆写后的体（仅启用且 body 可解析时非 null）。
-            // overrideBody 为 null（未启用 / 非 JSON）时走单体路径，与既有行为逐字节一致。
+            // baseBody = 未叠加 Effort 覆写的基准体（历史剥离 + 系统提示词覆写后）。
+            // parsedBody = 可解析且 Effort 覆写启用时的解析对象（按档位序列化的源），
+            // 为 null（未启用 / 非 JSON）时走单体路径，与既有行为逐字节一致。
             let baseBody = bodyBuffer;
-            let overrideBody = null;
+            let parsedBody = null;
             if (isClaudeCode && bodyBuffer.length) {
                 try {
                     const parsed = JSON.parse(bodyBuffer.toString('utf8'));
@@ -395,14 +400,15 @@ export function createProxyServer({
                     // 基准体定格：此后仅 Effort 覆写分支再改 parsed（两者字段
                     // 互不相交，与系统提示词覆写的先后顺序不影响序列化字节）。
                     baseBody = body;
-                    // Effort 覆写：开关开启时无论 CC 本地设置如何，均以配置档位
-                    // 覆盖 output_config.effort（CC 当前实际形态）并兜底覆写
-                    // top-level effort；仅在覆写生效时重序列化 body。
-                    if (effortOverride?.enabled) {
-                        parsed.output_config = { ...parsed.output_config, effort: effortOverride.level };
-                        parsed.effort = effortOverride.level;
-                        overrideBody = Buffer.from(JSON.stringify(parsed), 'utf8');
-                        body = overrideBody;
+                    // 仅接受普通对象：合法 JSON 但非对象（数字 / 字符串 / 布尔 / 数组）时
+                    // 类型守卫拦下，使其回到「原样透传」路径。否则 bodyForLevel 内
+                    // 对原始值赋属性会在严格模式抛 TypeError，而该处不在任何 try 内，
+                    // 异常将逃逸至 claude-proxy 的 uncaughtException 处理器并
+                    // process.exit(1) 杀死代理。数组一并拦下：即便不抛错，
+                    // JSON.stringify 也会丢弃非索引属性使覆写静默失效。
+                    if (effortOverride?.enabled
+                        && parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                        parsedBody = parsed;
                     }
                 } catch {
                     // Not JSON — forward verbatim.
@@ -431,18 +437,39 @@ export function createProxyServer({
             // （首项为首选上游，详见 buildTargets）。置于拦截判定之后：
             // 被拦截的请求不触达上游，不应消耗 half-open 探测名额。
             let targets = buildTargets(req, target);
-            // 定向 Effort 覆写：为每个候选上游预置请求体（命中列表 → 覆写体，
-            // 未命中 → 基准体；未配置列表 → 全量覆写）。转发层按 entry 取用，
-            // failover 后新上游收到与其 base 匹配的体。未启用 / 非 JSON 时
-            // 不附加字段（零开销），转发层回退入参 body，与既有路径一致。
-            if (overrideBody !== null) {
-                targets = targets.map((entry) => ({
-                    ...entry,
-                    body: effortTargetSet === null
-                        || isBaseUrlTargetHit(entry.base, effortTargetSet)
-                        ? overrideBody
-                        : baseBody
-                }));
+            // 定向 Effort 覆写：为每个候选上游预置请求体（按该上游生效档位）。
+            // 转发层按 entry 取用，failover 后新上游收到与其 base 匹配的体。
+            // 未启用 / 非 JSON（parsedBody 为 null）时不附加字段（零开销），
+            // 转发层回退入参 body，与既有路径逐字节一致。
+            if (parsedBody !== null) {
+                // 档位 → 请求体缓存（惰性记忆化：同档位只序列化一次）。
+                const levelBodies = new Map();
+                const bodyForLevel = (level) => {
+                    const cached = levelBodies.get(level);
+                    if (cached) return cached;
+                    // 赋值 → 序列化 → 入缓存必须连续完成：多档位共用同一
+                    // parsedBody 对象，交错会串档。
+                    parsedBody.output_config = { ...parsedBody.output_config, effort: level };
+                    parsedBody.effort = level;
+                    const built = Buffer.from(JSON.stringify(parsedBody), 'utf8');
+                    levelBodies.set(level, built);
+                    return built;
+                };
+                const globalLevel = effortOverride.level;
+                targets = targets.map((entry) => {
+                    // 三态：undefined 未命中 → 不覆写（baseBody，保留 CC 本地档位）；
+                    // null 命中但条目未指定档位 → 回退全局 level；档位值 → 该档位。
+                    // 未配置列表（effortTargets 为 null）→ 全量覆写全局 level。
+                    const resolved = effortTargets === null
+                        ? globalLevel
+                        : resolveBaseUrlTargetValue(entry.base, effortTargets);
+                    return {
+                        ...entry,
+                        body: resolved === undefined
+                            ? baseBody
+                            : bodyForLevel(resolved ?? globalLevel)
+                    };
+                });
             }
 
             // 采样防重：sampled 标志覆盖成功收尾与连接错误回调；ttfbAt 由
