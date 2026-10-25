@@ -10,11 +10,13 @@ import {
 import { extractUsage, extractUsageFromResponseEvents, createUsageTracker } from './usage.js';
 import {
     scaleUsageInEvent,
-    scaleUsageInMessageJson,
-    normalizeScaleBaseUrl,
-    buildScaleTargetSet,
-    isScaleTargetHit
+    scaleUsageInMessageJson
 } from './usage-scale.js';
+import {
+    normalizeBaseUrl,
+    buildBaseUrlTargetSet,
+    isBaseUrlTargetHit
+} from './base-url-match.js';
 import { createDebugLog } from './debug-log.js';
 import { isSuggestionModeRequest, buildSuggestionResponse, SUGGESTION_MARKER } from './suggestion-mode.js';
 import { buildOverriddenSystem } from './system-prompt.js';
@@ -203,12 +205,13 @@ export function createProxyServer({
             try {
                 const base = resolveUpstream('', item.baseUrl);
                 return {
-                    base: { protocol: base.protocol, host: base.host, port: base.port },
+                    address: { protocol: base.protocol, host: base.host, port: base.port },
                     basePath: base.path,
                     // 规范化完整 base（与匹配侧同源，统一尾斜杠/缺省端口归一）；
                     // 非 http(s) 协议时 normalize 返回 null，回退手工拼接保持
-                    // 既有转发行为（该上游永不命中定向列表）。
-                    scaleBase: normalizeScaleBaseUrl(item.baseUrl)
+                    // 既有转发行为（该上游永不命中定向列表）。字段名 base 为
+                    // usageScale / effortOverride 两个定向特性的共用判定输入。
+                    base: normalizeBaseUrl(item.baseUrl)
                         ?? `${base.protocol}//${base.host}:${base.port}${base.path}`,
                     headers: item.headers,
                     name: item.name
@@ -232,12 +235,12 @@ export function createProxyServer({
         && usageScale.ratio > 0 && usageScale.ratio <= 10)
         ? usageScale.ratio
         : null;
-    // 主上游完整 base（协议//host:端口/basePath）：与 normalizeScaleBaseUrl
+    // 主上游完整 base（协议//host:端口/basePath）：与 normalizeBaseUrl
     // 输出同构，供定向缩放判定与实际命中上游比对。resolveUpstream 已完成
     // 尾斜杠与缺省端口归一。
-    const primaryScaleBase = (() => {
+    const primaryBase = (() => {
         // 与匹配侧共用同一规范化函数，保证配置项与实际 base 的可比性。
-        const normalized = normalizeScaleBaseUrl(baseUrlEnv);
+        const normalized = normalizeBaseUrl(baseUrlEnv);
         if (normalized !== null) return normalized;
         // 未设置（走默认官方 API）或非 http(s) 协议：回退 resolveUpstream
         // 结果（协议异常时定向匹配永不命中，不影响既有转发行为）。
@@ -248,7 +251,13 @@ export function createProxyServer({
     // 关闭态（ratio null）无需构造，保持零开销。
     const scaleTargetSet = usageScaleRatio === null
         ? null
-        : buildScaleTargetSet(usageScale.baseUrls);
+        : buildBaseUrlTargetSet(usageScale.baseUrls);
+    // Effort 覆写定向列表：enabled 非 true 时不构造（保持 null），请求侧
+    // overrideBody 亦为 null，走单体路径零行为变化。null 表示未配置 / 全部
+    // 非法（等效空列表 → 全量覆写）。
+    const effortTargetSet = effortOverride?.enabled === true
+        ? buildBaseUrlTargetSet(effortOverride.baseUrls)
+        : null;
     // 熔断器：未注入时创建默认实例（3 连败 / 30s 冷却）；无备用上游时不创建，
     // 选路层零开销（单上游无熔断意义，保持透传路径最简）。
     const breaker = upstreamBreaker ?? (failoverBases.length ? createUpstreamBreaker() : null);
@@ -296,14 +305,14 @@ export function createProxyServer({
     // 无 breaker（单上游或未启用）时走原顺序，零行为变化。
     const buildTargets = (req, target) => {
         const primaries = [{ target, headers: undefined, name: undefined,
-            scaleBase: primaryScaleBase }];
+            base: primaryBase }];
         const backups = failoverBases.map((f) => ({
-            target: { protocol: f.base.protocol, host: f.base.host,
-                port: f.base.port, path: `${f.basePath}${req.url}` },
+            target: { protocol: f.address.protocol, host: f.address.host,
+                port: f.address.port, path: `${f.basePath}${req.url}` },
             headers: f.headers,
             name: f.name,
-            // 定向缩放判定用的完整 base（不含请求 path）。
-            scaleBase: f.scaleBase
+            // 两个定向特性共用的完整 base（不含请求 path）。
+            base: f.base
         }));
         if (!breaker || !backups.length) return [...primaries, ...backups];
 
@@ -349,6 +358,12 @@ export function createProxyServer({
 
             // Request-side history strip (CC UA only).
             let body = bodyBuffer;
+            // Effort 覆写定向化的两个请求体变体：
+            // baseBody = 未叠加 Effort 覆写的基准体（历史剥离 + 系统提示词覆写后），
+            // overrideBody = 叠加 Effort 覆写后的体（仅启用且 body 可解析时非 null）。
+            // overrideBody 为 null（未启用 / 非 JSON）时走单体路径，与既有行为逐字节一致。
+            let baseBody = bodyBuffer;
+            let overrideBody = null;
             if (isClaudeCode && bodyBuffer.length) {
                 try {
                     const parsed = JSON.parse(bodyBuffer.toString('utf8'));
@@ -365,14 +380,6 @@ export function createProxyServer({
                         parsed.messages = stripThinkingTextHistory(parsed.messages);
                         body = Buffer.from(JSON.stringify(parsed), 'utf8');
                     }
-                    // Effort 覆写：开关开启时无论 CC 本地设置如何，均以配置档位
-                    // 覆盖 output_config.effort（CC 当前实际形态）并兜底覆写
-                    // top-level effort；仅在覆写生效时重序列化 body。
-                    if (effortOverride?.enabled) {
-                        parsed.output_config = { ...parsed.output_config, effort: effortOverride.level };
-                        parsed.effort = effortOverride.level;
-                        body = Buffer.from(JSON.stringify(parsed), 'utf8');
-                    }
                     // 系统提示词覆写：enabled 且 prompt 非空且原 system 存在时，
                     // 将 system 替换为配置文本（保留原首块 cache_control）。
                     // prompt 为空或 system 缺失时按 no-op 字节透传。
@@ -384,6 +391,18 @@ export function createProxyServer({
                             parsed.system = overridden;
                             body = Buffer.from(JSON.stringify(parsed), 'utf8');
                         }
+                    }
+                    // 基准体定格：此后仅 Effort 覆写分支再改 parsed（两者字段
+                    // 互不相交，与系统提示词覆写的先后顺序不影响序列化字节）。
+                    baseBody = body;
+                    // Effort 覆写：开关开启时无论 CC 本地设置如何，均以配置档位
+                    // 覆盖 output_config.effort（CC 当前实际形态）并兜底覆写
+                    // top-level effort；仅在覆写生效时重序列化 body。
+                    if (effortOverride?.enabled) {
+                        parsed.output_config = { ...parsed.output_config, effort: effortOverride.level };
+                        parsed.effort = effortOverride.level;
+                        overrideBody = Buffer.from(JSON.stringify(parsed), 'utf8');
+                        body = overrideBody;
                     }
                 } catch {
                     // Not JSON — forward verbatim.
@@ -411,7 +430,20 @@ export function createProxyServer({
             // targets 列表：经 breaker 过滤与健康分排序后的有序上游
             // （首项为首选上游，详见 buildTargets）。置于拦截判定之后：
             // 被拦截的请求不触达上游，不应消耗 half-open 探测名额。
-            const targets = buildTargets(req, target);
+            let targets = buildTargets(req, target);
+            // 定向 Effort 覆写：为每个候选上游预置请求体（命中列表 → 覆写体，
+            // 未命中 → 基准体；未配置列表 → 全量覆写）。转发层按 entry 取用，
+            // failover 后新上游收到与其 base 匹配的体。未启用 / 非 JSON 时
+            // 不附加字段（零开销），转发层回退入参 body，与既有路径一致。
+            if (overrideBody !== null) {
+                targets = targets.map((entry) => ({
+                    ...entry,
+                    body: effortTargetSet === null
+                        || isBaseUrlTargetHit(entry.base, effortTargetSet)
+                        ? overrideBody
+                        : baseBody
+                }));
+            }
 
             // 采样防重：sampled 标志覆盖成功收尾与连接错误回调；ttfbAt 由
             // 响应回调写入（上游响应头到达，含 failover 重试耗时，即用户
@@ -429,7 +461,7 @@ export function createProxyServer({
             // 熔断 open / half-open 探测被拒时首个实际上游可能是备用，
             // 此时不产生 onFailover 事件，不能固定用主上游 base。响应头到达
             // 时 failover 已终结，respond 内据此判定即最终上游。
-            let activeUpstreamBase = targets[0]?.scaleBase ?? primaryScaleBase;
+            let activeUpstreamBase = targets[0]?.base ?? primaryBase;
             // 熔断器同请求内去重：同一上游的多次重试失败只记一次（连续失败
             // 计数按「请求」为单位，不按重试尝试次数）。
             const probedThisRequest = new Set();
@@ -486,7 +518,7 @@ export function createProxyServer({
                 // null（1:1 透传，与关闭态同一路径）。
                 const effectiveScaleRatio = usageScaleRatio !== null
                     && (scaleTargetSet === null
-                        || isScaleTargetHit(activeUpstreamBase, scaleTargetSet))
+                        || isBaseUrlTargetHit(activeUpstreamBase, scaleTargetSet))
                     ? usageScaleRatio
                     : null;
                 const logStream = dbg.requestStart(req, bodyBuffer);
@@ -653,10 +685,10 @@ export function createProxyServer({
                 // 故障转移埋点：切换事件（时间+原因）入环形缓冲，后续样本归属新上游。
                 onFailover: (from, to, reason, toEntry) => {
                     failedOverFlag = true;
-                    // 定向缩放归属：第 4 参数为切换目标 entry（含完整 base）。
+                    // 定向归属：第 4 参数为切换目标 entry（含完整 base）。
                     // 先于 upstreamHealth 早退更新，确保未注入健康统计时
                     // 缩放判定仍跟随实际命中上游。
-                    if (toEntry?.scaleBase) activeUpstreamBase = toEntry.scaleBase;
+                    if (toEntry?.base) activeUpstreamBase = toEntry.base;
                     if (!upstreamHealth) return;
                     upstreamHealth.recordFailover(from, to, reason);
                     activeUpstreamId = to;

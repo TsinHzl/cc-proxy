@@ -31,6 +31,13 @@ test('page: renders dark settings page with exactly five switches', () => {
     assert.match(html, /id="systemPromptOverridePrompt"/);
     assert.match(html, /id="usageScaleEnabled"/);
     assert.match(html, /id="usageScaleRatio"/);
+    // 定向目标上游列表：两个特性各一套（key 前缀区分）。
+    assert.match(html, /id="scaleTargetList"/);
+    assert.match(html, /id="scaleTargetAdd"/);
+    assert.match(html, /id="effortTargetList"/);
+    assert.match(html, /id="effortTargetAdd"/);
+    assert.match(html, /留空 = 对所有上游缩放/);
+    assert.match(html, /留空 = 对所有上游覆写/);
     assert.match(html, /<option value="low">/);
     assert.match(html, /<option value="medium">/);
     assert.match(html, /<option value="high">/);
@@ -342,6 +349,12 @@ function createPageHarness(fetchHandler) {
         scaleTargetAdd: createPageElement({
             disabled: /\bdisabled\b/i.test(
                 html.match(/<button[^>]+id="scaleTargetAdd"[^>]*>/i)?.[0] ?? ''
+            )
+        }),
+        effortTargetList: createListElement(),
+        effortTargetAdd: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                html.match(/<button[^>]+id="effortTargetAdd"[^>]*>/i)?.[0] ?? ''
             )
         }),
         status: createPageElement(),
@@ -1065,6 +1078,121 @@ test('page script: invalid scale target URL blocks submit and rolls back', async
     assert.equal(patched, 0);
 });
 
+test('page script: effort target list renders, adds, removes and submits baseUrls', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            const body = JSON.parse(options.body);
+            patched.push(body);
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: {
+                        enabled: true, level: 'high', baseUrls: body.value
+                    },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: {
+                    enabled: true, level: 'high',
+                    baseUrls: ['https://a.com/api', 'http://b.com:8080']
+                },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    // 加载后按权威快照渲染两行，控件已启用。
+    assert.equal(page.elements.effortTargetList.children.length, 2);
+    assert.equal(page.elements.effortTargetAdd.disabled, false);
+    assert.equal(
+        page.elements.effortTargetList.children[0].options[0].value,
+        'https://a.com/api'
+    );
+
+    // 新增一行并填入合法 URL：blur 全量提交 effortOverride.baseUrls。
+    await page.elements.effortTargetAdd.dispatch('pointerdown');
+    await page.elements.effortTargetAdd.dispatch('click');
+    assert.equal(page.elements.effortTargetList.children.length, 3);
+    const newInput = page.elements.effortTargetList.children[2].options[0];
+    newInput.value = 'https://c.com';
+    await newInput.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 1);
+    assert.equal(patched[0].key, 'effortOverride.baseUrls');
+    assert.deepEqual(patched[0].value,
+        ['https://a.com/api', 'http://b.com:8080', 'https://c.com']);
+
+    // 删除首行：提交剩余两项（两个列表各自独立提交，互不影响）。
+    const firstRemove = page.elements.effortTargetList.children[0].options[1];
+    await firstRemove.dispatch('pointerdown');
+    await firstRemove.dispatch('click');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 2);
+    assert.deepEqual(patched[1].value, ['http://b.com:8080', 'https://c.com']);
+});
+
+test('page script: invalid effort target URL blocks submit and rolls back', async (t) => {
+    let patched = 0;
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            patched += 1;
+            return pageJsonResponse(200, { ok: true, data: {} });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: {
+                    enabled: true, level: 'high', baseUrls: ['https://a.com']
+                },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+    assert.equal(page.elements.effortTargetList.children.length, 1);
+
+    // 非法 URL（缺协议）：不提交、提示错误、回滚为快照值。
+    const input = page.elements.effortTargetList.children[0].options[0];
+    input.value = 'not a url';
+    await input.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched, 0);
+    assert.equal(page.elements.status.textContent, '目标上游须为 http(s) URL');
+    assert.equal(
+        page.elements.effortTargetList.children[0].options[0].value,
+        'https://a.com'
+    );
+});
+
 async function startApi({
     read,
     write,
@@ -1539,7 +1667,7 @@ test(
         assert.deepEqual((await initial.json()).data, {
             forwardSuggestionMode: false,
             thinkingAsText: true,
-            effortOverride: { enabled: true, level: 'high' },
+            effortOverride: { enabled: true, level: 'high', baseUrls: [] },
             systemPromptOverride: { enabled: false, prompt: '' },
             usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         });
@@ -1560,7 +1688,7 @@ test(
         assert.deepEqual((await updated.json()).data, {
             forwardSuggestionMode: true,
             thinkingAsText: true,
-            effortOverride: { enabled: true, level: 'high' },
+            effortOverride: { enabled: true, level: 'high', baseUrls: [] },
             systemPromptOverride: { enabled: false, prompt: '' },
                 usageScale: { enabled: false, ratio: 1, baseUrls: [] }
         });
@@ -1572,7 +1700,7 @@ test(
                 thinkingWindow: { enabled: false, lines: 10 },
                 forwardSuggestionMode: true,
                 thinkingAsText: true,
-                effortOverride: { enabled: true, level: 'high' },
+                effortOverride: { enabled: true, level: 'high', baseUrls: [] },
                 systemPromptOverride: { enabled: false, prompt: '' },
                     usageScale: { enabled: false, ratio: 1, baseUrls: [] },
                 alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -2116,6 +2244,64 @@ test('API: PATCH usageScale.baseUrls invalid array rejected with 400', async (t)
         assert.equal(response.status, 400, body);
     }
     assert.equal(writes, 0);
+});
+
+test('API: PATCH effortOverride.baseUrls writes trimmed array, invalid rejected', async (t) => {
+    let update = null;
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({
+            effortOverride: { enabled: true, level: 'high', baseUrls: [] }
+        }),
+        write: (partial) => {
+            update = partial;
+            writes += 1;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    const valid = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'effortOverride.baseUrls', value: [' https://a.com/api ', 'http://b.com:8080'] })
+    });
+    assert.equal(valid.status, 200);
+    // 边界处统一 trim 后交给 writeConfig（与 usageScale.baseUrls 同口径）。
+    assert.deepEqual(update, {
+        effortOverride: { baseUrls: ['https://a.com/api', 'http://b.com:8080'] }
+    });
+
+    // 空数组 = 清空定向列表（等效全量覆写），须合法。
+    const empty = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'effortOverride.baseUrls', value: [] })
+    });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(update, { effortOverride: { baseUrls: [] } });
+
+    const writesBefore = writes;
+    for (const body of [
+        // 非数组。
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: 'https://a.com' }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: null }),
+        // 含非字符串 / 空串 / 不可解析 / 非 http(s) 协议项：任一非法整次 400。
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: ['https://a.com', 42] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: ['https://a.com', ''] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: ['   '] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: ['not a url'] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: ['ftp://a.com'] }),
+        JSON.stringify({ key: 'effortOverride.baseUrls', value: [null] })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, writesBefore);
 });
 
 test('API: GET captured-system-prompt returns captured text or null', async (t) => {

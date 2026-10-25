@@ -56,10 +56,13 @@ function toEntry(item) {
  * @param {Array<{target: object, headers?: object, name?: string}|object>} targets
  *     ordered upstream list: first item is the primary upstream, each entry
  *     carries an optional per-upstream `headers` override merged into the
- *     request; a bare target object is accepted for the single-upstream case
+ *     request; a bare target object is accepted for the single-upstream case.
+ *     Each entry may carry an optional `body` Buffer, used instead of the
+ *     original request body for that upstream only (per-upstream body
+ *     targeting: e.g. effort override applied only to matched upstreams)
  * @param {(upstreamRes: http.IncomingMessage) => void} respond
  * @param {(err: Error) => void} onError
- * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string, toEntry?: {target: object, headers?: object, name?: string, base?: string}) => void, onProbe?: (upstreamName: string) => void}} [options]
+ * @param {{isClientGone?: () => boolean, onFailover?: (fromName: string, toName: string, reason: string, toEntry?: {target: object, headers?: object, name?: string, base?: string, body?: Buffer}) => void, onProbe?: (upstreamName: string) => void}} [options]
  *     `onProbe`：某上游失败且请求即将切换到下一上游时上报（供熔断器记败）。
  *     末位上游的最终失败响应不经此上报——会原样交给 respond，由 proxy 按
  *     状态码归类，避免同一尝试重复计数。
@@ -71,6 +74,9 @@ export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onErr
     const attempt = (entryIdx, triesLeft) => {
         const entry = entries[entryIdx];
         const target = entry.target;
+        // 逐 entry 请求体：定向特性（Effort 覆写）为每个上游预置命中与否的
+        // body；缺省时回退原始请求体，行为与现状逐字节一致。
+        const body = entry.body ?? bodyBuffer;
         // 客户端已断开时放弃重试，避免继续消耗上游配额。
         if (isClientGone()) return;
         // 切到下一上游；已无备用上游时返回 false，由调用方走最终错误路径。
@@ -80,23 +86,23 @@ export function forwardRequestWithRetry(req, bodyBuffer, targets, respond, onErr
             logger.warn(`[cc-proxy] upstream ${labelOf(entry)} failed (${reason}), failing over to ${labelOf(next)}`);
             // 切换即视为当前上游本次尝试失败：先于 onFailover 上报（供熔断
             // 器记败），再通知埋点侧切换统计归属。第 4 参数携带切换目标
-            // entry（含完整 base 等调用方附加字段），供定向缩放等需要完整
-            // base URL 的消费方使用；既有 3 参数回调不受影响。
+            // entry（含完整 base / 逐 entry body 等调用方附加字段），供
+            // 定向缩放与 Effort 覆写等消费方使用；既有 3 参数回调不受影响。
             if (onProbe) onProbe(labelOf(entry));
             if (onFailover) onFailover(labelOf(entry), labelOf(next), reason, next);
             attempt(entryIdx + 1, RETRY_DELAYS_MS.length);
             return true;
         };
-        forwardRequest(req, bodyBuffer, target, (upstreamRes) => {
+        forwardRequest(req, body, target, (upstreamRes) => {
             // 不触发重试/转移的状态码（含成功与末位上游的最终失败）直接交给 respond。
             if (!FAILOVER_STATUS.has(upstreamRes.statusCode)) {
-                respond(upstreamRes, bodyBuffer);
+                respond(upstreamRes, body);
                 return;
             }
             const retrySame = triesLeft > 0 && RETRYABLE_STATUS.has(upstreamRes.statusCode);
             if (!retrySame && !switchToNext(`HTTP ${upstreamRes.statusCode}`)) {
                 // 全部上游耗尽：最后一个错误响应原样返回客户端。
-                respond(upstreamRes, bodyBuffer);
+                respond(upstreamRes, body);
                 return;
             }
             if (isClientGone()) { upstreamRes.resume(); return; }

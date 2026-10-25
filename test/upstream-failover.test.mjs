@@ -8,13 +8,20 @@ import { createProxyServer } from '../src/proxy.js';
 function startMockUpstream(handler) {
     let calls = 0;
     let lastHeaders = null;
+    let lastBody = null;
     const server = http.createServer((req, res) => {
         calls += 1;
         lastHeaders = req.headers;
-        handler(req, res);
+        const chunks = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+            lastBody = Buffer.concat(chunks).toString('utf8');
+            handler(req, res);
+        });
     });
     server.calls = () => calls;
     server.lastHeaders = () => lastHeaders;
+    server.lastBody = () => lastBody;
     return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
@@ -27,11 +34,11 @@ function target(port) {
     return { protocol: 'http:', host: '127.0.0.1', port: String(port), path: '/v1/messages' };
 }
 
-function send(targets, options = {}) {
+function send(targets, options = {}, body = Buffer.from('{}')) {
     return new Promise((resolve, reject) => {
         // forwardRequestWithRetry 只读取 req.headers / req.method，用最小桩即可。
         const req = { headers: { 'content-type': 'application/json' }, method: 'POST' };
-        forwardRequestWithRetry(req, Buffer.from('{}'), targets, (upstreamRes) => {
+        forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
             const chunks = [];
             upstreamRes.on('data', (c) => chunks.push(c));
             upstreamRes.on('end', () => resolve({ status: upstreamRes.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
@@ -88,6 +95,28 @@ test('onFailover 4th arg carries the backup entry with caller-attached fields', 
         assert.equal(failoverEntry, backupEntry);
         assert.equal(failoverEntry.base, 'http://127.0.0.1:9999/api');
         assert.equal(failoverEntry.name, 'backup');
+    } finally {
+        primary.close();
+        backup.close();
+    }
+});
+
+test('per-entry body: each upstream sends its own body, fallback to original', async () => {
+    const primary = await startMockUpstream((req, res) => {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end('err');
+    });
+    const backup = await startMockUpstream((req, res) => sse(res, 'ok'));
+    const original = '{"effort":"local"}';
+    const overridden = '{"effort":"high"}';
+    try {
+        // entry.body 存在时该上游使用它；缺省时回退原始请求体。
+        await send([
+            { target: target(primary.address().port), body: Buffer.from(overridden) },
+            { target: target(backup.address().port) }
+        ], {}, Buffer.from(original));
+        assert.equal(primary.lastBody(), overridden);
+        assert.equal(backup.lastBody(), original);
     } finally {
         primary.close();
         backup.close();

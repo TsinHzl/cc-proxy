@@ -14,7 +14,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     thinkingAsText: true,
     // Effort 覆写：开启时统一将 CC 请求体中的 effort 档位改写为 level，
     // 无论 CC 本地设置是什么。默认开启且为 high。
-    effortOverride: { enabled: true, level: 'high' },
+    // baseUrls 为定向列表（默认 [] = 全量覆写）：非空时仅命中完整 base
+    // URL 的上游收到覆写后请求体，未命中上游保留 CC 本地的 effort 档位。
+    effortOverride: { enabled: true, level: 'high', baseUrls: [] },
     // 系统提示词覆写：开启且 prompt 非空时统一将 CC 请求体的 system 字段
     // 替换为配置文本。默认关闭；prompt 为空时覆写按 no-op 处理。
     systemPromptOverride: { enabled: false, prompt: '' },
@@ -49,9 +51,30 @@ export function defaultConfigPath() {
     return path.join(os.homedir(), '.cc-proxy', 'config.json');
 }
 
+// baseUrls 逐项校验（usageScale / effortOverride 共用）：字符串 + trim 非空 +
+// `new URL` 可解析 + http/https 协议，非法项逐项丢弃（与 upstreams 风格一致），
+// 不整体回退；非数组（含 undefined）归一为空列表。
+function cleanBaseUrls(input) {
+    if (!Array.isArray(input)) return [];
+    const clean = [];
+    for (const entry of input) {
+        if (typeof entry !== 'string') continue;
+        const value = entry.trim();
+        if (!value) continue;
+        try {
+            const u = new URL(value);
+            if (u.protocol === 'http:' || u.protocol === 'https:') clean.push(value);
+        } catch {
+            // 非法 URL 项逐项丢弃。
+        }
+    }
+    return clean;
+}
+
 // 行数非法（非整数、<1 或 >100）回退默认 10；enabled / forwardSuggestionMode
 // 非布尔回退 false（默认拦截建议请求）；effortOverride.enabled 非布尔回退 true，
 // level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）；
+// effortOverride.baseUrls 与 usageScale.baseUrls 同口径逐项校验（非法项丢弃）；
 // systemPromptOverride.enabled 非布尔回退 false，prompt 非字符串或超 256KB 回退 ''。
 function normalizeConfig(raw) {
     const config = {
@@ -78,6 +101,7 @@ function normalizeConfig(raw) {
     if (eo && typeof eo === 'object' && !Array.isArray(eo)) {
         if (typeof eo.enabled === 'boolean') config.effortOverride.enabled = eo.enabled;
         if (EFFORT_LEVELS.has(eo.level)) config.effortOverride.level = eo.level;
+        config.effortOverride.baseUrls = cleanBaseUrls(eo.baseUrls);
     }
     const spo = raw.systemPromptOverride;
     if (spo && typeof spo === 'object' && !Array.isArray(spo)) {
@@ -94,25 +118,8 @@ function normalizeConfig(raw) {
             && us.ratio > 0 && us.ratio <= 10) {
             config.usageScale.ratio = us.ratio;
         }
-        // 定向列表：逐项校验（字符串 + new URL 可解析 + http/https 协议），
-        // 非法项逐项丢弃（与 upstreams 风格一致），不整体回退。
-        if (Array.isArray(us.baseUrls)) {
-            const cleanBaseUrls = [];
-            for (const entry of us.baseUrls) {
-                if (typeof entry !== 'string') continue;
-                const value = entry.trim();
-                if (!value) continue;
-                try {
-                    const u = new URL(value);
-                    if (u.protocol === 'http:' || u.protocol === 'https:') {
-                        cleanBaseUrls.push(value);
-                    }
-                } catch {
-                    // 非法 URL 项逐项丢弃。
-                }
-            }
-            config.usageScale.baseUrls = cleanBaseUrls;
-        }
+        // 定向列表：与 effortOverride.baseUrls 共用同一逐项校验口径。
+        config.usageScale.baseUrls = cleanBaseUrls(us.baseUrls);
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {
         config.forwardSuggestionMode = raw.forwardSuggestionMode;

@@ -9,7 +9,7 @@ const EXPECTED_DEFAULT_CONFIG = {
     thinkingWindow: { enabled: false, lines: 10 },
     forwardSuggestionMode: false,
     thinkingAsText: true,
-    effortOverride: { enabled: true, level: 'high' },
+    effortOverride: { enabled: true, level: 'high', baseUrls: [] },
     systemPromptOverride: { enabled: false, prompt: '' },
     usageScale: { enabled: false, ratio: 1.0, baseUrls: [] },
     alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -74,7 +74,7 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
         thinkingWindow: { enabled: true, lines: 25 },
         forwardSuggestionMode: true,
         thinkingAsText: true,
-        effortOverride: { enabled: true, level: 'high' },
+        effortOverride: { enabled: true, level: 'high', baseUrls: [] },
         systemPromptOverride: { enabled: false, prompt: '' },
         usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -98,7 +98,7 @@ test('readConfig: old config without effortOverride defaults it to enabled/high'
         thinkingWindow: { enabled: true, lines: 25 },
         forwardSuggestionMode: true
     }));
-    assert.deepEqual(readConfig(dir).effortOverride, { enabled: true, level: 'high' });
+    assert.deepEqual(readConfig(dir).effortOverride, { enabled: true, level: 'high', baseUrls: [] });
 });
 
 test('readConfig: explicit effortOverride values persist', (t) => {
@@ -106,7 +106,36 @@ test('readConfig: explicit effortOverride values persist', (t) => {
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
         effortOverride: { enabled: false, level: 'low' }
     }));
-    assert.deepEqual(readConfig(dir).effortOverride, { enabled: false, level: 'low' });
+    assert.deepEqual(readConfig(dir).effortOverride, { enabled: false, level: 'low', baseUrls: [] });
+});
+
+test('readConfig: explicit effortOverride.baseUrls persist', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: {
+            enabled: true, level: 'max',
+            baseUrls: ['https://a.com/api', 'http://b.com:8080']
+        }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride.baseUrls,
+        ['https://a.com/api', 'http://b.com:8080']);
+});
+
+test('readConfig: invalid effortOverride.baseUrls items dropped individually', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: {
+            baseUrls: ['https://ok.com', 42, '', 'not a url', 'ftp://x.com', null]
+        }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride.baseUrls, ['https://ok.com']);
+    // 非数组退化为空列表 = 全量覆写语义。
+    for (const baseUrls of ['https://x.com', 7, { a: 1 }]) {
+        fs.writeFileSync(path.join(dir, 'config.json'),
+            JSON.stringify({ effortOverride: { baseUrls } }));
+        assert.deepEqual(readConfig(dir).effortOverride.baseUrls, [],
+            `baseUrls=${JSON.stringify(baseUrls)}`);
+    }
 });
 
 test('readConfig: invalid effortOverride fields fall back field-by-field', (t) => {
@@ -136,7 +165,7 @@ test('readConfig: non-object effortOverride falls back to defaults', (t) => {
     const dir = tmpDir(t);
     for (const effortOverride of [null, 'high', 7, ['low']]) {
         fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ effortOverride }));
-        assert.deepEqual(readConfig(dir).effortOverride, { enabled: true, level: 'high' });
+        assert.deepEqual(readConfig(dir).effortOverride, { enabled: true, level: 'high', baseUrls: [] });
     }
 });
 
@@ -149,6 +178,18 @@ test('writeConfig: effortOverride partial merge keeps sibling field', (t) => {
     assert.equal(out.effortOverride.enabled, false);
 });
 
+test('writeConfig: effortOverride.baseUrls replaces whole array, sibling fields kept', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({
+        effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] }
+    }, dir);
+    const out = writeConfig({ effortOverride: { baseUrls: ['https://b.com'] } }, dir);
+    // 数组整体替换；未提供的 enabled / level 保留。
+    assert.deepEqual(out.effortOverride.baseUrls, ['https://b.com']);
+    assert.equal(out.effortOverride.enabled, false);
+    assert.equal(out.effortOverride.level, 'low');
+});
+
 test('writeConfig: effortOverride write keeps other top-level settings', (t) => {
     const dir = tmpDir(t);
     writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
@@ -156,7 +197,7 @@ test('writeConfig: effortOverride write keeps other top-level settings', (t) => 
     // 防丢失：写 effortOverride 不得重置已保存的顶层开关。
     assert.equal(out.forwardSuggestionMode, true);
     assert.equal(out.thinkingAsText, false);
-    assert.deepEqual(out.effortOverride, { enabled: true, level: 'low' });
+    assert.deepEqual(out.effortOverride, { enabled: true, level: 'low', baseUrls: [] });
 });
 
 test('readConfig: invalid thinkingAsText values fall back to true', (t) => {
@@ -533,7 +574,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 30 },
         forwardSuggestionMode: true,
         thinkingAsText: false,
-        effortOverride: { enabled: false, level: 'low' }
+        effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] }
     }));
 
     let out = writeConfig({ thinkingWindow: { lines: 40 } }, dir);
@@ -541,7 +582,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: true,
         thinkingAsText: false,
-        effortOverride: { enabled: false, level: 'low' },
+        effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
         usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -555,7 +596,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
         thinkingAsText: false,
-        effortOverride: { enabled: false, level: 'low' },
+        effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
         usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -569,7 +610,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
         thinkingAsText: true,
-        effortOverride: { enabled: false, level: 'low' },
+        effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
         usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },
@@ -583,7 +624,8 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
         thinkingWindow: { enabled: true, lines: 40 },
         forwardSuggestionMode: false,
         thinkingAsText: true,
-        effortOverride: { enabled: true, level: 'medium' },
+        // 未提交 baseUrls：逐字段合并保留原列表（不被重置为空）。
+        effortOverride: { enabled: true, level: 'medium', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
         usageScale: { enabled: false, ratio: 1, baseUrls: [] },
         alerts: { dailyTokens: 0, dailyCost: 0 },

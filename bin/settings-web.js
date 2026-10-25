@@ -30,6 +30,7 @@ const ALLOWED_KEYS = new Set([
     'thinkingAsText',
     'effortOverride.enabled',
     'effortOverride.level',
+    'effortOverride.baseUrls',
     'systemPromptOverride.enabled',
     'systemPromptOverride.prompt',
     'usageScale.enabled',
@@ -309,6 +310,24 @@ async function handleSessionRequest(context, req, res, url) {
     return true;
 }
 
+// baseUrls 数组校验（usageScale / effortOverride 共用）：字符串数组且逐项
+// trim 后非空、可 new URL 解析、协议限 http/https；数组内混入任一非法项整次
+// 提交判 400（设置页本地拦截为第一道防线，此处为兜底）。
+function isValidBaseUrlArray(value) {
+    if (!Array.isArray(value)) return false;
+    return value.every((item) => {
+        if (typeof item !== 'string') return false;
+        const text = item.trim();
+        if (!text) return false;
+        try {
+            const u = new URL(text);
+            return u.protocol === 'http:' || u.protocol === 'https:';
+        } catch {
+            return false;
+        }
+    });
+}
+
 // 点号 key（effortOverride.* / systemPromptOverride.*）按 key 分流校验
 // value 类型；顶层布尔 key 维持原有布尔校验。
 function isValidSettingsPatch(body) {
@@ -326,22 +345,9 @@ function isValidSettingsPatch(body) {
         return typeof body.value === 'number' && Number.isFinite(body.value)
             && body.value > 0 && body.value <= 10;
     }
-    if (body.key === 'usageScale.baseUrls') {
-        // 与 settings.js normalizeConfig 同口径：字符串数组且逐项可 new URL
-        // 解析、协议限 http/https；数组内混入任一非法项整次提交判 400
-        // （设置页本地拦截为第一道防线，此处为兜底）。
-        if (!Array.isArray(body.value)) return false;
-        return body.value.every((item) => {
-            if (typeof item !== 'string') return false;
-            const value = item.trim();
-            if (!value) return false;
-            try {
-                const u = new URL(value);
-                return u.protocol === 'http:' || u.protocol === 'https:';
-            } catch {
-                return false;
-            }
-        });
+    if (body.key === 'usageScale.baseUrls' || body.key === 'effortOverride.baseUrls') {
+        // 与 settings.js normalizeConfig 同口径（共用 isValidBaseUrlArray）。
+        return isValidBaseUrlArray(body.value);
     }
     return typeof body.value === 'boolean';
 }
@@ -391,7 +397,7 @@ async function handleSettingsPatch(context, req, res, host) {
         const [group, leaf] = body.key.split('.');
         // baseUrls 在边界处归一（trim）：校验与落盘同口径，避免配置层二次
         // 归一成为隐式契约。
-        const value = body.key === 'usageScale.baseUrls'
+        const value = body.key.endsWith('.baseUrls')
             ? body.value.map((item) => item.trim())
             : body.value;
         const patch = leaf

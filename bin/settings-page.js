@@ -5,10 +5,13 @@ import { USAGE_BOARD_SCRIPT } from './settings-page-usage.js';
 import { HEALTH_BOARD_SCRIPT } from './settings-page-health.js';
 import { RECENT_REQUESTS_SCRIPT } from './settings-page-recent-requests.js';
 import {
-    SCALE_TARGETS_STYLES,
-    SCALE_TARGETS_HTML,
-    SCALE_TARGETS_SCRIPT
-} from './settings-page-scaletargets.js';
+    EFFORT_TARGET_LIST,
+    SCALE_TARGET_LIST,
+    TARGET_LISTS,
+    buildTargetListHtml,
+    buildTargetListScript,
+    buildTargetListStyles
+} from './settings-page-targetlist.js';
 
 const PAGE_STYLES = `
 :root {
@@ -132,7 +135,7 @@ textarea:disabled { cursor: wait; opacity: .62; }
     header p { margin-top: 4px; }
     .setting { min-height: 52px; padding: 8px 14px; gap: 16px; }
 }
-` + SCALE_TARGETS_STYLES;
+` + buildTargetListStyles();
 
 const PAGE_BODY = `
 <main>
@@ -182,6 +185,7 @@ const PAGE_BODY = `
                 </label>
             </div>
         </div>
+` + buildTargetListHtml(EFFORT_TARGET_LIST) + `
         <div class="setting">
             <div class="copy">
                 <h2>系统提示词覆写</h2>
@@ -211,7 +215,7 @@ const PAGE_BODY = `
                 </label>
             </div>
         </div>
-` + SCALE_TARGETS_HTML + `
+` + buildTargetListHtml(SCALE_TARGET_LIST) + `
         <div class="prompt-block">
             <textarea id="systemPromptOverridePrompt" aria-label="自定义系统提示词" disabled spellcheck="false"></textarea>
         </div>
@@ -441,7 +445,7 @@ const PAGE_SCRIPT = `
             document.getElementById(key).disabled = effective;
         }
         // 动态列表行不在 controls 静态数组中，随状态派生同步禁用。
-        syncScaleTargetControls(effective);
+        syncTargetListControls(effective);
     }
 
     function applySettings(data) {
@@ -461,20 +465,22 @@ const PAGE_SCRIPT = `
             = data.systemPromptOverride?.prompt ?? '';
         document.getElementById('usageScaleRatio').value
             = data.usageScale?.ratio ?? 1;
-        // 定向缩放列表以权威数据重建（加载 / 保存成功 / 非法回滚共用）。
-        renderScaleTargets(data.usageScale?.baseUrls ?? []);
+        // 定向列表以权威数据重建（加载 / 保存成功 / 非法回滚共用）。
+        renderTargetLists(data);
         // 程序化回填不触发 input 事件：复位模板选中并同步下拉为默认 CC官方。
         selectedTemplate = '';
         syncTemplateSelect();
     }
 
     function acceptSettings(data) {
+        const targetListBases = targetListSnapshot(data);
         authoritativeSnapshot = {
             forwardSuggestionMode: data.forwardSuggestionMode,
             thinkingAsText: data.thinkingAsText,
             effortOverride: {
                 enabled: data.effortOverride?.enabled,
-                level: data.effortOverride?.level
+                level: data.effortOverride?.level,
+                baseUrls: targetListBases.effortOverride
             },
             systemPromptOverride: {
                 enabled: data.systemPromptOverride?.enabled,
@@ -483,9 +489,7 @@ const PAGE_SCRIPT = `
             usageScale: {
                 enabled: data.usageScale?.enabled,
                 ratio: data.usageScale?.ratio,
-                baseUrls: Array.isArray(data.usageScale?.baseUrls)
-                    ? [...data.usageScale.baseUrls]
-                    : []
+                baseUrls: targetListBases.usageScale
             }
         };
         applySettings(authoritativeSnapshot);
@@ -734,7 +738,7 @@ const PAGE_SCRIPT = `
         return response.body;
     }
 
-` + SCALE_TARGETS_SCRIPT + USAGE_BOARD_SCRIPT + HEALTH_BOARD_SCRIPT + RECENT_REQUESTS_SCRIPT + `
+` + buildTargetListScript(TARGET_LISTS) + USAGE_BOARD_SCRIPT + HEALTH_BOARD_SCRIPT + RECENT_REQUESTS_SCRIPT + `
 
     async function initialize() {
         await bootstrap();
