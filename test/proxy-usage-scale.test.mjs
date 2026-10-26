@@ -418,3 +418,115 @@ test('usage scale enabled: error JSON passthrough untouched', async () => {
         upstream.close();
     }
 });
+
+test('baseUrls entry form: per-entry ratio overrides global', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const port = upstream.address().port;
+
+    try {
+        // 命中条目自带 ratio=0.25 → 按其缩放（而非全局 0.5）。
+        const proxy = await startProxy(upstream, {
+            usageScale: {
+                enabled: true, ratio: 0.5,
+                baseUrls: [{ url: `http://127.0.0.1:${port}`, ratio: 0.25 }]
+            }
+        });
+        try {
+            const res = await post(proxy.address().port);
+            const events = await readSseEvents(res);
+            const start = events.find((e) => e.type === 'message_start');
+            assert.equal(start.message.usage.input_tokens, 250); // ceil(1000×0.25)
+        } finally {
+            proxy.closeAllConnections?.();
+            proxy.close();
+        }
+    } finally {
+        upstream.closeAllConnections?.();
+        upstream.close();
+    }
+});
+
+test('baseUrls entry form: string entry inherits global ratio', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const port = upstream.address().port;
+
+    try {
+        // 字符串条目 = 未指定比例 → 继承全局 ratio=0.5。
+        const proxy = await startProxy(upstream, {
+            usageScale: {
+                enabled: true, ratio: 0.5,
+                baseUrls: [`http://127.0.0.1:${port}`]
+            }
+        });
+        try {
+            const res = await post(proxy.address().port);
+            const events = await readSseEvents(res);
+            const start = events.find((e) => e.type === 'message_start');
+            assert.equal(start.message.usage.input_tokens, 500); // ceil(1000×0.5)
+        } finally {
+            proxy.closeAllConnections?.();
+            proxy.close();
+        }
+    } finally {
+        upstream.closeAllConnections?.();
+        upstream.close();
+    }
+});
+
+test('baseUrls entry form: empty list scales every upstream by global', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const port = upstream.address().port;
+
+    try {
+        // 空列表 → 全量缩放（effort「未配置列表 = 全量」语义对齐）。
+        const proxy = await startProxy(upstream, {
+            usageScale: { enabled: true, ratio: 0.5, baseUrls: [] }
+        });
+        try {
+            const res = await post(proxy.address().port);
+            const events = await readSseEvents(res);
+            const start = events.find((e) => e.type === 'message_start');
+            assert.equal(start.message.usage.input_tokens, 500);
+        } finally {
+            proxy.closeAllConnections?.();
+            proxy.close();
+        }
+    } finally {
+        upstream.closeAllConnections?.();
+        upstream.close();
+    }
+});
+
+test('baseUrls entry form: duplicate normalized URL keeps first entry ratio', async () => {
+    const { started } = startMockUpstream({ events: SSE_EVENTS });
+    const upstream = await started;
+    const port = upstream.address().port;
+
+    try {
+        // 尾斜杠归一后与首项同一 URL → 丢弃后项 0.25，保留首项（继承全局 0.5）。
+        const proxy = await startProxy(upstream, {
+            usageScale: {
+                enabled: true, ratio: 0.5,
+                baseUrls: [
+                    `http://127.0.0.1:${port}`,
+                    { url: `http://127.0.0.1:${port}/`, ratio: 0.25 }
+                ]
+            }
+        });
+        try {
+            const res = await post(proxy.address().port);
+            const events = await readSseEvents(res);
+            const start = events.find((e) => e.type === 'message_start');
+            assert.equal(start.message.usage.input_tokens, 500);
+        } finally {
+            proxy.closeAllConnections?.();
+            proxy.close();
+        }
+    } finally {
+        upstream.closeAllConnections?.();
+        upstream.close();
+    }
+});

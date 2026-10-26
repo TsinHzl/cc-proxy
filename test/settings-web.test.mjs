@@ -1023,8 +1023,9 @@ test('page script: scale target list renders, adds, removes and submits baseUrls
     assert.deepEqual(patched[0].value,
         ['https://a.com/api', 'http://b.com:8080', 'https://c.com']);
 
-    // 删除首行：提交剩余两项。
-    const firstRemove = page.elements.scaleTargetList.children[0].options[1];
+    // 删除首行：提交剩余两项。行元素为 [URL input, 比例 input, 删除按钮]，
+    // 删除按钮位于 options[2]。
+    const firstRemove = page.elements.scaleTargetList.children[0].options[2];
     await firstRemove.dispatch('pointerdown');
     await firstRemove.dispatch('click');
     await flushPageMicrotasks();
@@ -1066,7 +1067,8 @@ test('page script: invalid scale target URL blocks submit and rolls back', async
     await input.dispatch('blur');
     await flushPageMicrotasks();
     assert.equal(patched, 0);
-    assert.equal(page.elements.status.textContent, '目标上游须为 http(s) URL');
+    assert.equal(page.elements.status.textContent,
+        '目标上游须为 http(s) URL，比例须为 0–10 之间的有限数值');
     assert.equal(page.elements.scaleTargetList.children.length, 1);
     assert.equal(
         page.elements.scaleTargetList.children[0].options[0].value,
@@ -1327,10 +1329,12 @@ test('page script: usageScale target rows have no level select', async (t) => {
     await flushPageMicrotasks();
 
     const row = page.elements.scaleTargetList.children[0];
-    // 仅 [URL input, 删除按钮] 两个子元素，删除按钮位于 options[1]。
-    assert.equal(row.options.length, 2);
+    // 加比例输入框后为 [URL input, 比例 input, 删除按钮] 三个子元素，
+    // 删除按钮位于 options[2]。
+    assert.equal(row.options.length, 3);
     assert.equal(row.options[0].className, 'target-url');
-    assert.equal(row.options[1].className, 'target-remove');
+    assert.equal(row.options[1].className, 'target-ratio');
+    assert.equal(row.options[2].className, 'target-remove');
 });
 
 async function startApi({
@@ -2491,6 +2495,143 @@ test('API: PATCH effortOverride.baseUrls accepts mixed string / object entries',
     assert.equal(dedupe.status, 200);
     assert.deepEqual(update.effortOverride.baseUrls,
         ['https://a.com', { url: 'https://a.com/', level: 'max' }]);
+});
+
+test('API: PATCH usageScale.baseUrls accepts mixed string / {url,ratio} entries', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({ usageScale: { enabled: true, ratio: 0.5, baseUrls: [] } }),
+        write: (partial) => {
+            update = partial;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    const response = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            key: 'usageScale.baseUrls',
+            value: [
+                ' https://a.com ',
+                { url: ' https://b.com ', ratio: 0.5 },
+                // ratio 缺失：对象项只保留 url 键（丢弃 undefined 空比例字段）。
+                { url: 'https://c.com' }
+            ]
+        })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(update, {
+        usageScale: {
+            baseUrls: [
+                'https://a.com',
+                { url: 'https://b.com', ratio: 0.5 },
+                { url: 'https://c.com' }
+            ]
+        }
+    });
+});
+
+test('API: PATCH usageScale.baseUrls rejects invalid ratio with 400', async (t) => {
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({ usageScale: { enabled: true, ratio: 0.5, baseUrls: [] } }),
+        write: () => {
+            writes += 1;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    for (const body of [
+        // 对象缺 url / url 非法 / url 非字符串。
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ ratio: 0.5 }] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'not a url', ratio: 0.5 }] }),
+        // url 非 http(s) 协议。
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'ftp://a.com', ratio: 0.5 }] }),
+        // ratio 存在但非法：0 / 负 / >10 / 非数 / 非有限 / 字符串。
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'https://a.com', ratio: 0 }] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'https://a.com', ratio: -1 }] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'https://a.com', ratio: 11 }] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'https://a.com', ratio: '0.5' }] }),
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [{ url: 'https://a.com', ratio: Infinity }] }),
+        // 项为非字符串非对象（数组亦不接受）。
+        JSON.stringify({ key: 'usageScale.baseUrls', value: [[{ url: 'https://a.com' }]] })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, 0);
+});
+
+test('page script: usageScale target rows have ratio input', async (t) => {
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') return pageJsonResponse(200, { ok: true, data: {} });
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: {
+                    enabled: true, ratio: 0.5,
+                    baseUrls: [{ url: 'https://a.com', ratio: 0.25 }, 'https://b.com']
+                }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    // scale 行元素：对象项回填比例，字符串项留空（继承全局）。
+    const objRow = page.elements.scaleTargetList.children[0];
+    assert.equal(objRow.options[1].className, 'target-ratio');
+    assert.equal(objRow.options[1].value, '0.25');
+    const strRow = page.elements.scaleTargetList.children[1];
+    assert.equal(strRow.options[1].value, '');
+});
+
+// effort 行保持档位下拉、无比例框：行元素为 [input, select, 删除按钮]。
+test('page script: effort target rows have level select, no ratio input', async (t) => {
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') return pageJsonResponse(200, { ok: true, data: {} });
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high', baseUrls: ['https://a.com'] },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: true, ratio: 0.5, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    const row = page.elements.effortTargetList.children[0];
+    assert.equal(row.options.length, 3);
+    assert.equal(row.options[0].className, 'target-url');
+    assert.equal(row.options[1].className, 'target-level');
+    assert.equal(row.options[2].className, 'target-remove');
 });
 
 test('API: PATCH effortOverride.baseUrls rejects invalid mixed entry shapes with 400', async (t) => {

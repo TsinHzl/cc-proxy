@@ -256,7 +256,10 @@ the configured level before forwarding, regardless of CC's local setting. Key po
   "usageScale": {
     "enabled": true,
     "ratio": 0.5,
-    "baseUrls": ["https://gateway.example.com/api"]
+    "baseUrls": [
+      "https://a.example.com",
+      { "url": "https://gateway.example.com/api", "ratio": 0.25 }
+    ]
   }
 }
 ```
@@ -285,14 +288,29 @@ output-length calculations stay unaffected). Key points:
   decision uses the upstream of the final response. The settings page offers a dynamic
   target-upstream list for the `用量展示缩放` block (add / remove / save on blur), with
   invalid URLs blocked locally from being submitted.
+- **Per-entry ratio**: `baseUrls` entries are fully aligned with the Effort override and
+  may be mixed in one array — a plain string such as `"https://a.example.com"` means that
+  **entry inherits the global `ratio`**, while an object `{ "url": ..., "ratio": ... }`
+  gives that upstream its own ratio. In the example above `gateway.example.com/api` scales
+  by `0.25`, `a.example.com` by the global `0.5`, and non-matching upstreams pass through
+  1:1. Each row in the settings page has a ratio input, where leaving it blank corresponds
+  to the string form (inheriting the global ratio).
+- **More specific wins**: a single upstream can match several entries (say both
+  `https://a.com` and `https://a.com/api`); the **entry with the longer (more specific)
+  path** takes effect, and the same URL counts only once (after trailing-slash
+  normalization duplicates are dropped, keeping the first occurrence).
 - **Client-visible values only**: internal usage stats (`usage.json`) and the settings
   dashboard always record the upstream's real values; non-Claude-Code clients, error
   responses and non-message JSON pass through untouched.
 - **Restart required**: the config is read once at proxy startup; switches take effect on
   the next session.
 - **Config tolerance**: an invalid `baseUrls` item in a hand-edited `config.json`
-  (unparsable or not http/https) is dropped item by item; if **all** items are invalid the
-  list degrades to empty → equivalent to blanket scaling, so take care.
+  (unparsable or not http/https; an object with an invalid `url`, or a `ratio` that is not
+  a finite number within (0, 10]) is dropped item by item; an object missing `ratio` or
+  carrying an invalid one is normalized to the string form (i.e. inheriting the global
+  ratio); if **all** items are invalid the list degrades to empty → equivalent to blanket
+  scaling, so take care. The legacy `["https://a.com"]` string-only config needs no
+  migration — its semantics equal "every entry inherits the global ratio".
 
 ### Suggestion Mode
 

@@ -161,3 +161,21 @@ test('entry form and set form agree on hit semantics', () => {
             `hit semantics diverged for ${base}`);
     }
 });
+
+test('entry form value reused by usageScale as a numeric ratio', () => {
+    // usageScale 把条目 value 当作独立比例（对齐 effort 的档位）。
+    // buildBaseUrlTargetEntries 对 numeric value 不设类型限制，可被
+    // usageScale 直接复用为 ratio；此用例锁定该复用语义。
+    const entries = buildBaseUrlTargetEntries([
+        { url: 'https://a.com' },                       // value 未指定 → null
+        { url: 'https://b.com/api', value: 0.5 },       // 独立比例
+        { url: 'https://c.com', value: 2 }              // 放大比例
+    ]);
+    // 未命中 → undefined（1:1 透传）。
+    assert.equal(resolveBaseUrlTargetValue('https://x.com:443', entries), undefined);
+    // 命中但条目未指定 → null（回退全局 ratio）。
+    assert.equal(resolveBaseUrlTargetValue('https://a.com:443/y', entries), null);
+    // 命中带数值 value → 按条目比例（数值原样返回）。
+    assert.equal(resolveBaseUrlTargetValue('https://b.com:443/api', entries), 0.5);
+    assert.equal(resolveBaseUrlTargetValue('https://c.com:443', entries), 2);
+});

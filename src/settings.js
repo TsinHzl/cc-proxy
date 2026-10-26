@@ -78,6 +78,35 @@ function cleanBaseUrls(input) {
     return clean;
 }
 
+// usageScale.baseUrls 逐项校验，条目为混合形态（与 cleanEffortTargets 完全同构，
+// 仅「值」为数值比例 ratio 而非档位）：
+// - 字符串且 URL 合法 → 保留字符串（语义：继承全局 ratio）
+// - 对象且 url 合法 → ratio 为有限数 ∈ (0,10] 时保留 { url, ratio }；ratio 缺失
+//   或非法则归一为纯字符串（「未指定比例」只有字符串一种存储表达）
+// - 其余（非字符串非对象、url 非法）逐项丢弃；非数组归一为空列表
+// - 去重：以 normalizeBaseUrl 规范串判重，已出现过的一律跳过并保留首次出现的
+//   形态与比例（与 cleanEffortTargets 同口径，跨形态判重）。
+function cleanScaleTargets(input) {
+    if (!Array.isArray(input)) return [];
+    const seen = new Set();
+    const clean = [];
+    for (const entry of input) {
+        const isObject = entry !== null && typeof entry === 'object' && !Array.isArray(entry);
+        const url = cleanBaseUrl(isObject ? entry.url : entry);
+        if (url === null) continue;
+        const key = normalizeBaseUrl(url);
+        if (key === null || seen.has(key)) continue;
+        seen.add(key);
+        clean.push(isObject && isValidScaleRatio(entry.ratio) ? { url, ratio: entry.ratio } : url);
+    }
+    return clean;
+}
+
+// 数值比例校验：有限数且 ∈ (0,10]（与 usageScale.ratio 全局值同值域）。
+function isValidScaleRatio(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 10;
+}
+
 // effortOverride.baseUrls 逐项校验，条目为混合形态：
 // - 字符串且 URL 合法 → 保留字符串（语义：继承全局档位）
 // - 对象且 url 合法 → level ∈ EFFORT_LEVELS 时保留 { url, level }；level 缺失
@@ -107,7 +136,7 @@ function cleanEffortTargets(input) {
 // 非布尔回退 false（默认拦截建议请求）；effortOverride.enabled 非布尔回退 true，
 // level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）；
 // effortOverride.baseUrls 走 cleanEffortTargets（混合形态 + 规范串去重），
-// usageScale.baseUrls 走 cleanBaseUrls（纯字符串逐项校验），两者非法项均丢弃；
+// usageScale.baseUrls 走 cleanScaleTargets（混合形态 + 规范串去重），两者非法项均丢弃；
 // systemPromptOverride.enabled 非布尔回退 false，prompt 非字符串或超 256KB 回退 ''。
 function normalizeConfig(raw) {
     const config = {
@@ -152,7 +181,7 @@ function normalizeConfig(raw) {
             config.usageScale.ratio = us.ratio;
         }
         // 定向列表：纯字符串形态（唯一形态，不携带比例），逐项校验。
-        config.usageScale.baseUrls = cleanBaseUrls(us.baseUrls);
+        config.usageScale.baseUrls = cleanScaleTargets(us.baseUrls);
     }
     if (typeof raw.forwardSuggestionMode === 'boolean') {
         config.forwardSuggestionMode = raw.forwardSuggestionMode;
