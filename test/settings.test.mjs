@@ -471,6 +471,83 @@ test('writeConfig: usageScale.baseUrls array replaced wholesale, sibling kept', 
     assert.equal(out.usageScale.ratio, 0.5);
 });
 
+test('readConfig: usageScale.baseUrls accepts mixed string / {url,ratio} entries', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.8, baseUrls: [
+            'https://a.com',
+            { url: 'https://b.com/api', ratio: 0.5 },
+            { url: 'https://c.com', ratio: 2 }
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, [
+        'https://a.com',
+        { url: 'https://b.com/api', ratio: 0.5 },
+        { url: 'https://c.com', ratio: 2 }
+    ]);
+    // 全局 ratio 独立保留，作「未指定比例条目」的兜底。
+    assert.equal(readConfig(dir).usageScale.ratio, 0.8);
+});
+
+test('readConfig: usageScale.baseUrls object without ratio normalizes to string', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.5, baseUrls: [
+            { url: 'https://a.com/api' }
+        ] }
+    }));
+    // 缺 ratio → 归一为纯字符串（该条目继承全局 ratio），与 effort 缺 level 归一一致。
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, ['https://a.com/api']);
+});
+
+test('readConfig: usageScale.baseUrls invalid ratio normalizes to string, bad items dropped', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.5, baseUrls: [
+            { url: 'https://a.com', ratio: 0 },      // 0 越界 → 归一字符串
+            { url: 'https://b.com', ratio: -1 },     // 负 → 归一字符串
+            { url: 'https://c.com', ratio: 11 },     // >10 → 归一字符串
+            { url: 'https://d.com', ratio: '0.5' },  // 非数 → 归一字符串
+            { url: 'https://e.com', ratio: Infinity }, // 非有限 → 归一字符串
+            { url: 'https://f.com', ratio: 0.5 },    // 合法 → 保留
+            { url: '::bad::', ratio: 0.5 },          // url 非法 → 丢弃
+            42, 'not a url'                          // 非字符串非对象 → 丢弃
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, [
+        'https://a.com', 'https://b.com', 'https://c.com', 'https://d.com', 'https://e.com',
+        { url: 'https://f.com', ratio: 0.5 }
+    ]);
+});
+
+test('readConfig: usageScale.baseUrls dedupes by normalized URL across forms, keeping first', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.5, baseUrls: [
+            'https://a.com',
+            { url: 'https://a.com', ratio: 0.2 },          // 尾斜杠归一后同一 URL → 丢弃
+            { url: 'https://b.com/', ratio: 0.4 },          // 首项为对象 → 保留该对象
+            'https://b.com'                                  // 与首项同类重复 → 丢弃
+        ] }
+    }));
+    // 去重保留首次出现的形态与比例（"https://a.com" 保留首项字符串；
+    // "https://b.com/" 与 "https://b.com" 归一后同串，保留首项对象）。
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, [
+        'https://a.com',
+        { url: 'https://b.com/', ratio: 0.4 }
+    ]);
+});
+
+test('readConfig: legacy string[] usageScale.baseUrls stays equivalent (inherit global)', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { enabled: true, ratio: 0.5, baseUrls: ['https://a.com', 'https://b.com'] }
+    }));
+    // 纯字符串数组读入后逐项仍是字符串 → 全部继承全局 ratio，零迁移。
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, ['https://a.com', 'https://b.com']);
+    assert.equal(readConfig(dir).usageScale.ratio, 0.5);
+});
+
 // ---------- alerts / models.pricing ----------
 
 test('readConfig: invalid alerts.dailyTokens falls back to 0', (t) => {

@@ -324,10 +324,24 @@ function isHttpUrl(value) {
     }
 }
 
-// usageScale.baseUrls 校验：纯字符串数组；混入任一非法项整次提交判 400
-// （设置页本地拦截为第一道防线，此处为兜底）。
-function isValidBaseUrlArray(value) {
-    return Array.isArray(value) && value.every(isHttpUrl);
+// usageScale.baseUrls 校验：混合数组——字符串项须为合法 http(s) URL；
+// 对象项须为非数组对象、url 合法、ratio 若存在须为有限数 ∈ (0,10]。任一
+// 非法项整次提交判 400（与 settings.js cleanScaleTargets 同口径，差异在于
+// 此处判 400 而非静默丢弃）。
+function isValidScaleTargetArray(value) {
+    if (!Array.isArray(value)) return false;
+    return value.every((item) => {
+        if (typeof item === 'string') return isHttpUrl(item);
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) return false;
+        if (!isHttpUrl(item.url)) return false;
+        if (item.ratio === undefined) return true;
+        return isValidScaleRatio(item.ratio);
+    });
+}
+
+// 数值比例校验：有限数且 ∈ (0,10]（与 usageScale.ratio 全局值同值域）。
+function isValidScaleRatio(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 10;
 }
 
 // effortOverride.baseUrls 校验：混合数组——字符串项须为合法 http(s) URL；
@@ -361,7 +375,7 @@ function isValidSettingsPatch(body) {
         return typeof body.value === 'number' && Number.isFinite(body.value)
             && body.value > 0 && body.value <= 10;
     }
-    if (body.key === 'usageScale.baseUrls') return isValidBaseUrlArray(body.value);
+    if (body.key === 'usageScale.baseUrls') return isValidScaleTargetArray(body.value);
     if (body.key === 'effortOverride.baseUrls') return isValidEffortTargetArray(body.value);
     return typeof body.value === 'boolean';
 }
@@ -409,12 +423,17 @@ async function handleSettingsPatch(context, req, res, host) {
         // 点号 key 展开为嵌套 partial（{ effortOverride: { level: value } }），
         // 顶层 key 直接映射，writeConfig 逐字段合并保留未提交字段。
         const [group, leaf] = body.key.split('.');
-        // baseUrls 在边界处按 group 归一：usageScale 为纯字符串数组，逐项
-        // trim；effortOverride 为混合数组，字符串项 trim，对象项只保留
-        // url / level 两键（丢弃 level 缺失时的 undefined 键，避免落盘出现
-        // 空档位字段），与 settings.js cleanEffortTargets 的落盘口径一致。
+        // baseUrls 在边界处按 group 归一：usageScale 为混合数组，字符串项
+        // trim，对象项只保留 url / ratio 两键（丢弃 ratio 缺失时的 undefined
+        // 键，避免落盘出现空比例字段），与 settings.js cleanScaleTargets 的
+        // 落盘口径一致；effortOverride 同样只保留 url / level 两键。
         const value = body.key === 'usageScale.baseUrls'
-            ? body.value.map((item) => item.trim())
+            ? body.value.map((item) => {
+                if (typeof item === 'string') return item.trim();
+                return item.ratio === undefined
+                    ? { url: item.url.trim() }
+                    : { url: item.url.trim(), ratio: item.ratio };
+            })
             : body.key === 'effortOverride.baseUrls'
                 ? body.value.map((item) => {
                     if (typeof item === 'string') return item.trim();

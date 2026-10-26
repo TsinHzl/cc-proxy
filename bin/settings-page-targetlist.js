@@ -11,7 +11,11 @@ export const SCALE_TARGET_LIST = {
     key: 'scale',
     group: 'usageScale',
     title: '目标上游 Base URL（留空 = 对所有上游缩放）',
-    hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时缩放；未配置时对所有上游生效。修改后下次启动会话生效。'
+    hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时缩放；未配置时对所有上游生效。'
+        + '每行可选缩放比例：「留空」表示用上方全局比例；多条命中时路径更长（更具体）的条目录生效。'
+        + '修改后下次启动会话生效。',
+    // 行内数值比例输入声明：空值 = 继承全局比例（提交为纯字符串形态）。
+    ratio: true
 };
 
 export const EFFORT_TARGET_LIST = {
@@ -48,6 +52,10 @@ const TARGET_LIST_STYLES = `
 .target-level:hover:not(:disabled) { border-color: var(--accent); }
 .target-level:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .target-level:disabled { cursor: wait; opacity: .62; }
+.target-ratio { flex: 0 0 auto; width: 92px; height: 28px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); color: var(--text); font: inherit; font-size: 12px; }
+.target-ratio:hover:not(:disabled) { border-color: var(--accent); }
+.target-ratio:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.target-ratio:disabled { cursor: wait; opacity: .62; }
 .targets-hint { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
 `;
 
@@ -75,7 +83,8 @@ export function buildTargetListScript(lists) {
     const spec = JSON.stringify(lists.map((item) => ({
         key: item.key,
         group: item.group,
-        levels: item.levels ?? null
+        levels: item.levels ?? null,
+        ratio: item.ratio ?? false
     })));
     return `
     // 定向目标上游列表：动态行增删 + blur 时全量提交 <group>.baseUrls。
@@ -92,18 +101,24 @@ export function buildTargetListScript(lists) {
             for (const entry of rows) {
                 entry.input.disabled = disabled;
                 if (entry.levelSelect) entry.levelSelect.disabled = disabled;
+                if (entry.ratioInput) entry.ratioInput.disabled = disabled;
                 entry.remove.disabled = disabled;
             }
         }
 
-        // 产出混合形态：档位为空 → 纯字符串（继承全局），否则 { url, level }。
+        // 产出混合形态：比例为空 → 纯字符串（继承全局），否则 { url, ratio }；
+        // 档位为空 → 纯字符串（继承全局），否则 { url, level }。两者由列表
+        // 描述 only 决定（ratio 列表无档位，levels 列表无比例）。
         function currentValues() {
             const values = [];
             for (const entry of rows) {
                 const url = entry.input.value.trim();
                 if (!url) continue;
+                const ratio = entry.ratioInput ? entry.ratioInput.value.trim() : '';
                 const level = entry.levelSelect ? entry.levelSelect.value : '';
-                values.push(level ? { url, level } : url);
+                if (ratio) values.push({ url, ratio: Number(ratio) });
+                else if (level) values.push({ url, level });
+                else values.push(url);
             }
             return values;
         }
@@ -139,16 +154,32 @@ export function buildTargetListScript(lists) {
                 levelSelect.value = (value && typeof value === 'object' ? value.level : '') || '';
                 levelSelect.addEventListener('change', () => submit());
             }
+            // 数值比例输入仅在该列表声明 ratio 时创建（effort 列表保持无比例框）。
+            let ratioInput = null;
+            if (spec.ratio) {
+                ratioInput = document.createElement('input');
+                ratioInput.type = 'number';
+                ratioInput.step = 'any';
+                ratioInput.className = 'target-ratio';
+                ratioInput.setAttribute('aria-label', '该上游的缩放比例（留空 = 继承全局）');
+                ratioInput.placeholder = '比例（留空继承）';
+                // 对象输入（{ url, ratio }）回填比例；字符串输入即「继承全局」，留空。
+                ratioInput.value = (value && typeof value === 'object' && value.ratio !== undefined)
+                    ? String(value.ratio) : '';
+                ratioInput.addEventListener('input', () => {});
+                ratioInput.addEventListener('blur', () => submit());
+            }
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'target-remove';
             remove.textContent = '删除';
             remove.setAttribute('aria-label', '删除该目标上游');
             row.appendChild(input);
+            if (ratioInput) row.appendChild(ratioInput);
             if (levelSelect) row.appendChild(levelSelect);
             row.appendChild(remove);
             listEl.appendChild(row);
-            const entry = { row, input, levelSelect, remove };
+            const entry = { row, input, levelSelect, ratioInput, remove };
             rows.push(entry);
             input.addEventListener('blur', () => submit());
             // pointerdown 仅阻止焦点转移（避免输入框 blur 提交把按钮置 disabled
@@ -176,7 +207,8 @@ export function buildTargetListScript(lists) {
             syncControls(!leaseActive || saving);
         }
 
-        // 本地校验：逐项须为可解析的 http(s) URL；非法时不提交并回滚展示。
+        // 本地校验：逐项须为可解析的 http(s) URL；条目比例（若该列表声明）
+        // 须为有限数 ∈ (0,10]；任一非法时不提交并回滚展示。
         function isUrl(value) {
             try {
                 const parsed = new URL(value);
@@ -184,6 +216,13 @@ export function buildTargetListScript(lists) {
             } catch {
                 return false;
             }
+        }
+        function isValidRatio(value) {
+            return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 10;
+        }
+        function isValidEntry(item) {
+            if (typeof item === 'string') return isUrl(item);
+            return isUrl(item.url) && (item.ratio === undefined || isValidRatio(item.ratio));
         }
 
         async function submit() {
@@ -193,9 +232,12 @@ export function buildTargetListScript(lists) {
             // 此时 blur 不应再发起请求（否则失败提示会覆盖「连接已断开」）。
             if (saving || !leaseActive) return;
             const values = currentValues();
-            // 条目可能为对象形态，取 URL 侧校验。
-            if (!values.every((item) => isUrl(typeof item === 'string' ? item : item.url))) {
-                show('目标上游须为 http(s) URL', true);
+            // 条目可能为对象形态，取 URL 侧校验；比例越界（仅 scale 列表，
+            // 0 / 负 / 非数 / >10）本地拦截不提交。effort 列表无比例，仅查 URL。
+            if (!values.every(isValidEntry)) {
+                show(spec.ratio
+                    ? '目标上游须为 http(s) URL，比例须为 0–10 之间的有限数值'
+                    : '目标上游须为 http(s) URL', true);
                 render(authoritativeSnapshot?.[spec.group]?.baseUrls ?? []);
                 return;
             }

@@ -14,8 +14,6 @@ import {
 } from './usage-scale.js';
 import {
     normalizeBaseUrl,
-    buildBaseUrlTargetSet,
-    isBaseUrlTargetHit,
     buildBaseUrlTargetEntries,
     resolveBaseUrlTargetValue
 } from './base-url-match.js';
@@ -249,11 +247,19 @@ export function createProxyServer({
         const base = resolveUpstream('', baseUrlEnv);
         return `${base.protocol}//${base.host}:${base.port}${base.path}`;
     })();
-    // 定向缩放目标集合：null 表示未配置 / 全部非法（等效空列表 → 全量缩放）。
-    // 关闭态（ratio null）无需构造，保持零开销。
-    const scaleTargetSet = usageScaleRatio === null
+    // 定向缩放目标条目：null 表示未配置 / 全部非法（等效空列表 → 全量缩放）。
+    // 关闭态（ratio null）无需构造，保持零开销。条目形态与 effortOverride
+    // 共用 buildBaseUrlTargetEntries，每条目 value 为该上游独立比例
+    //（null = 未指定，回退全局 usageScaleRatio）。全局 ratio 只做兜底、
+    // 不作启用门——enabled 非 true 即不构造。
+    const scaleTargetEntries = usageScale === null
+        || typeof usageScale !== 'object'
+        || usageScale.enabled !== true
         ? null
-        : buildBaseUrlTargetSet(usageScale.baseUrls);
+        : buildBaseUrlTargetEntries((usageScale.baseUrls ?? []).map((entry) => ({
+            url: typeof entry === 'string' ? entry : entry.url,
+            value: typeof entry === 'string' ? null : entry.ratio ?? null
+        })));
     // Effort 覆写定向条目：enabled 非 true 时不构造（保持 null），请求侧
     // 不做任何覆写，走单体路径零行为变化。null 表示未配置 / 全部非法
     // （等效空列表 → 全量覆写）。条目自带档位（value），null 表示该条目
@@ -540,14 +546,23 @@ export function createProxyServer({
             forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
-                // 定向缩放：本请求最终命中上游的生效比例。targetSet 为 null
-                // （未配置列表）时全量缩放；否则仅命中上游缩放，未命中为
-                // null（1:1 透传，与关闭态同一路径）。
-                const effectiveScaleRatio = usageScaleRatio !== null
-                    && (scaleTargetSet === null
-                        || isBaseUrlTargetHit(activeUpstreamBase, scaleTargetSet))
-                    ? usageScaleRatio
-                    : null;
+                // 定向缩放：本请求最终命中上游的生效比例。scaleTargetEntries 为 null
+                // （未配置列表）时全量缩放；否则按三态：命中条目带 ratio →
+                // 该条目比例；命中条目未指定 → 回退全局 usageScaleRatio；
+                // 未命中 → null（1:1 透传，与关闭态同一路径）。全局
+                // usageScaleRatio 为 null（关闭 / 非法）时恒为 null 不透传。
+                let effectiveScaleRatio = null;
+                if (usageScaleRatio !== null) {
+                    if (scaleTargetEntries === null) {
+                        effectiveScaleRatio = usageScaleRatio;
+                    } else {
+                        const perEntryScaleValue =
+                            resolveBaseUrlTargetValue(activeUpstreamBase, scaleTargetEntries);
+                        effectiveScaleRatio = perEntryScaleValue === undefined
+                            ? null
+                            : (perEntryScaleValue === null ? usageScaleRatio : perEntryScaleValue);
+                    }
+                }
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 // 熔断记败（onProbe）：触发了故障转移的状态码（429/5xx）视为
                 // 该上游失败；未触发转移的状态码（含 4xx 与最终错误响应）视为

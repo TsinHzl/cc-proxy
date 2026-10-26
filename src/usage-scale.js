@@ -88,7 +88,8 @@ export function scaleUsageInMessageJson(parsed, ratio) {
     return { ...parsed, usage };
 }
 
-// 定向缩放的匹配原语（normalizeBaseUrl / buildBaseUrlTargetSet /
-// isBaseUrlTargetHit）统一由 src/base-url-match.js 提供，与 Effort 覆写
-// 定向共用同一实现；proxy 侧直接从该模块导入。
+// 定向缩放的匹配原语（normalizeBaseUrl / buildBaseUrlTargetEntries /
+// resolveBaseUrlTargetValue）统一由 src/base-url-match.js 提供，与 Effort 覆写
+// 定向共用同一实现；proxy 侧按最终命中上游解析条目 ratio 后，调用本模块
+// 的单比例缩放函数（scaleUsageInEvent / scaleUsageInMessageJson）。
 
