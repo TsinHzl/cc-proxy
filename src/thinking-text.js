@@ -100,6 +100,9 @@ export function stripThinkingTextHistory(messages) {
         if (!Array.isArray(message.content)) return message;
 
         const content = message.content.flatMap((block) => {
+            if (block?.type === 'thinking') {
+                return typeof block.signature === 'string' && block.signature ? [block] : [];
+            }
             if (block?.type !== 'text' || typeof block.text !== 'string') return [block];
             const text = block.text
                 // Quoted format first: see strip order note above.
@@ -213,6 +216,7 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
         logger.warn(`[cc-proxy] dropping thinking text block index=${pendingBlock.index} reason=${reason} blockBytes=${pendingBlock.bytes} responseBytes=${responseThinkingBytes}`);
         pendingBlock.thinking = '';
         pendingBlock.pending = '';
+        pendingBlock.signature = '';
         pendingBlock.discarded = true;
     };
 
@@ -255,7 +259,9 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
             }
 
             if (isMatchingSignatureDelta(event, pendingBlock.index)) {
-                // Signature is dropped: rendered text blocks carry no signature.
+                if (!pendingBlock.discarded && typeof event.delta.signature === 'string') {
+                    pendingBlock.signature += event.delta.signature;
+                }
                 continue;
             }
 
@@ -310,6 +316,29 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
                         if (elapsedLine && !tail) {
                             yield textDeltaEvent(pendingBlock.index, '\n');
                         }
+                        // 同 index 覆写为原生 thinking 块：
+                        // 1. content_block_start(thinking) 触发 Claude Code 清空底部流式 text 预览
+                        //    并将流式状态机槽位 Mt[index] 原地替换为 thinking 块；
+                        // 2. thinking_delta(+signature_delta) 填充完整思考内容与签名；
+                        // 3. content_block_stop 落地为原生可折叠 thinking 消息（默认折叠为
+                        //    "Thought for Xs"，支持 Ctrl+O 展开/折叠切换）。
+                        yield {
+                            type: 'content_block_start',
+                            index: pendingBlock.index,
+                            content_block: { type: 'thinking', thinking: '', signature: '' }
+                        };
+                        yield {
+                            type: 'content_block_delta',
+                            index: pendingBlock.index,
+                            delta: { type: 'thinking_delta', thinking: pendingBlock.thinking }
+                        };
+                        if (pendingBlock.signature) {
+                            yield {
+                                type: 'content_block_delta',
+                                index: pendingBlock.index,
+                                delta: { type: 'signature_delta', signature: pendingBlock.signature }
+                            };
+                        }
                         yield event;
                     }
                 } else if (pendingBlock.started) {
@@ -334,6 +363,9 @@ export async function* transformThinkingAsTextEvents(events, options = {}) {
             pendingBlock = {
                 index: event.index,
                 thinking: '',
+                signature: typeof event.content_block?.signature === 'string'
+                    ? event.content_block.signature
+                    : '',
                 pending: '',
                 firstChunk: true,
                 started: false,

@@ -129,7 +129,7 @@ test('response limit: subsequent blocks discarded after 1MiB cumulative', async 
 
 // ---------- 流式：SSE 行缓冲、lazy start、signature 剥离 ----------
 
-test('streaming: lazy content_block_start with header, no signature events', async () => {
+test('streaming: lazy text stream then same-index thinking overwrite on stop for auto-collapse', async () => {
     const events = [
         ev('message_start', { message: {} }),
         ev('content_block_start', { index: 0, content_block: { type: 'thinking' } }),
@@ -142,10 +142,13 @@ test('streaming: lazy content_block_start with header, no signature events', asy
     const types = out.map((e) => e.type);
     assert.deepEqual(types, [
         'message_start',
-        'content_block_start',   // lazy: emitted with first line
+        'content_block_start',   // lazy text start: emitted with first line
         'content_block_delta',   // header
         'content_block_delta',   // \n dim hello
         'content_block_delta',   // \n dim world
+        'content_block_start',   // same-index thinking start: clears streaming text preview
+        'content_block_delta',   // thinking_delta with full thinking text
+        'content_block_delta',   // signature_delta with accumulated signature
         'content_block_stop',
         'message_stop'
     ]);
@@ -153,6 +156,10 @@ test('streaming: lazy content_block_start with header, no signature events', asy
     assert.deepEqual(start.content_block, { type: 'text', text: '' });
     const texts = out.filter((e) => e.delta?.type === 'text_delta').map((e) => e.delta.text);
     assert.equal(texts.join(''), `${HEADER}\n${ANSI_DIM}hello${ANSI_RESET}\n${ANSI_DIM}world${ANSI_RESET}\n${ANSI_DIM}💭 Thought for 1s${ANSI_RESET}\n`);
+    const collapseStart = out[5];
+    assert.deepEqual(collapseStart, { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } });
+    assert.deepEqual(out[6], { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hello\nworld' } });
+    assert.deepEqual(out[7], { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig==+' } });
 });
 
 test('streaming: whitespace-only thinking block emits nothing (no orphan events)', async () => {
@@ -325,6 +332,22 @@ test('stripThinkingTextHistory: non-array / non-assistant passthrough', () => {
     assert.deepEqual(stripThinkingTextHistory(msgs), msgs);
 });
 
+test('stripThinkingTextHistory: strips unsigned thinking blocks but preserves signed ones', () => {
+    const messages = [{
+        role: 'assistant',
+        content: [
+            { type: 'thinking', thinking: 'unsigned gateway thought', signature: '' },
+            { type: 'thinking', thinking: 'signed thought', signature: 'sig-valid' },
+            { type: 'text', text: 'final answer' }
+        ]
+    }];
+    const out = stripThinkingTextHistory(messages);
+    assert.deepEqual(out[0].content, [
+        { type: 'thinking', thinking: 'signed thought', signature: 'sig-valid' },
+        { type: 'text', text: 'final answer' }
+    ]);
+});
+
 // ---------- 上游 URL 解析 ----------
 
 test('resolveUpstream: default upstream official API', () => {
@@ -402,9 +425,9 @@ test('proxy e2e: request log flags thinkingRewritten via onThinkingSeen', async 
         });
         assert.equal(res.status, 200);
         const raw = await res.text();
-        // 输出流中原始 thinking content_block_start 已被吞掉，仅剩惰性 text 块。
+        // 输出流中原始无初始字段的 thinking start 已被吞掉，先后输出惰性 text 块与带完整初始字段的折叠 thinking 块。
         assert.ok(raw.includes('"content_block":{"type":"text"'), 'text block emitted');
-        assert.ok(!raw.includes('"content_block":{"type":"thinking"}'), 'thinking start swallowed');
+        assert.ok(!raw.includes('"content_block":{"type":"thinking"}'), 'raw upstream thinking start swallowed');
         requestLog.flushNow();
         const snapshot = JSON.parse(fs.readFileSync(logFile, 'utf8'));
         assert.equal(snapshot.entries.length, 1);
@@ -497,10 +520,11 @@ test('proxy e2e: rewrites thinking to text for CC UA, splits across chunks', asy
         });
         assert.equal(res.status, 200);
         const raw = await res.text();
-        assert.ok(!raw.includes('signature_delta'), 'signature events stripped');
         assert.ok(raw.includes('💭 Thinking'), 'rendered header present');
         assert.ok(raw.includes(`\\n\\u001b[2mdeep thought\\u001b[0m`), 'dim line rendering present');
         assert.ok(raw.includes('second line'));
+        assert.ok(raw.includes('"content_block":{"type":"thinking","thinking":"","signature":""}'), 'collapse thinking block emitted');
+        assert.ok(raw.includes('"type":"signature_delta","signature":"xyz"'), 'signature preserved on collapsed thinking block');
 
         // Non-CC client gets verbatim passthrough.
         const res2 = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
