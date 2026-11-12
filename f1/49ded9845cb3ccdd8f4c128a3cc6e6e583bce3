@@ -1,0 +1,25 @@
+test/thinking-text.test.mjs
+  44ec2c137c50ae62 132,145,149-151,159-162,335-350,428,430,526-527
+src/thinking-text.js
+  44ec2c137c50ae62 103-105,219,262-264,319-341,366-368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "f149ded9845cb3ccdd8f4c128a3cc6e6e583bce3",
+  "prompts": {
+    "44ec2c137c50ae62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae46000e-8153-4ce1-a2ee-a2c834536dcc",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 62,
+      "total_deletions": 6,
+      "accepted_lines": 62,
+      "overriden_lines": 0
+    }
+  }
+}
