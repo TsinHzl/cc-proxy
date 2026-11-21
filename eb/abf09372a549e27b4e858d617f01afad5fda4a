@@ -1,0 +1,37 @@
+bin/settings-web.js
+  b6439ad74064414f 28-29,329-336,338-340,347,359-361,368,439-449,451,453
+test/settings-web.test.mjs
+  b6439ad74064414f 1026-1028,1150-1151,1308-1434,1459-1461,1464-1465,2628-2710,2817,2842,2845-2846
+README.md
+  b6439ad74064414f 171,183,187,198,212,216
+src/settings.js
+  b6439ad74064414f 49-51,84-92,96-98,101,113-117,128-131,134-135,148-152,162
+bin/settings-page-targetlist.js
+  b6439ad74064414f 16,18-20,29,31-33,63-66,95-96,100-101,108-109,117,122-124,132-141,192-206,215,218,247-248,262-265
+README.en.md
+  b6439ad74064414f 201,236-242,254-256,270,307-310,324-328
+openspec/specs/usage-display-scale/spec.md
+  b6439ad74064414f 7
+test/settings.test.mjs
+  b6439ad74064414f 182-233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "ebabf09372a549e27b4e858d617f01afad5fda4a",
+  "prompts": {
+    "b6439ad74064414f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52ec2b5f-cd5b-4b15-968d-3d0657903133",
+        "model": "deepseek_for_coding"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 444,
+      "total_deletions": 76,
+      "accepted_lines": 438,
+      "overriden_lines": 0
+    }
+  }
+}
