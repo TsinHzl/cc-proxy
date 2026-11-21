@@ -1023,9 +1023,9 @@ test('page script: scale target list renders, adds, removes and submits baseUrls
     assert.deepEqual(patched[0].value,
         ['https://a.com/api', 'http://b.com:8080', 'https://c.com']);
 
-    // 删除首行：提交剩余两项。行元素为 [URL input, 比例 input, 删除按钮]，
-    // 删除按钮位于 options[2]。
-    const firstRemove = page.elements.scaleTargetList.children[0].options[2];
+    // 删除首行：提交剩余两项。行元素为 [URL input, 比例 input, 备注 input,
+    // 删除按钮]，删除按钮位于 options[3]。
+    const firstRemove = page.elements.scaleTargetList.children[0].options[3];
     await firstRemove.dispatch('pointerdown');
     await firstRemove.dispatch('click');
     await flushPageMicrotasks();
@@ -1147,8 +1147,8 @@ test('page script: effort target list renders, adds, removes and submits baseUrl
         ['https://a.com/api', 'http://b.com:8080', 'https://c.com']);
 
     // 删除首行：提交剩余两项（两个列表各自独立提交，互不影响）。
-    // 行元素顺序为 [URL input, 档位 select, 删除按钮]。
-    const firstRemove = page.elements.effortTargetList.children[0].options[2];
+    // 行元素顺序为 [URL input, 档位 select, 备注 input, 删除按钮]。
+    const firstRemove = page.elements.effortTargetList.children[0].options[3];
     await firstRemove.dispatch('pointerdown');
     await firstRemove.dispatch('click');
     await flushPageMicrotasks();
@@ -1305,6 +1305,133 @@ test('page script: effort level change submits object form; empty submits string
         [{ url: 'https://a.com', level: 'ultracode' }, { url: 'https://b.com', level: 'max' }]);
 });
 
+test('page script: effort target label input renders and round-trips through submit', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            const body = JSON.parse(options.body);
+            patched.push(body);
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: {
+                        enabled: true, level: 'high', baseUrls: body.value
+                    },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: {
+                    enabled: true, level: 'high',
+                    // 首项带备注（对象形态），次项无备注（字符串形态）。
+                    baseUrls: [
+                        { url: 'https://a.com', label: '火山方舟' },
+                        'https://b.com'
+                    ]
+                },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    const rows = page.elements.effortTargetList.children;
+    // 行元素 [URL, 档位, 备注, 删除]；备注回填对象条目的 label。
+    assert.equal(rows[0].options[2].className, 'target-label');
+    assert.equal(rows[0].options[2].value, '火山方舟');
+    assert.equal(rows[1].options[2].value, '');
+    assert.equal(rows[0].options[2].maxLength, 80);
+
+    // 给纯字符串条目补备注：该项升级为对象形态，档位仍为继承全局（不写 level）。
+    const label = rows[1].options[2];
+    label.value = '  BigModel  ';
+    await label.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 1);
+    assert.equal(patched[0].key, 'effortOverride.baseUrls');
+    assert.deepEqual(patched[0].value, [
+        { url: 'https://a.com', label: '火山方舟' },
+        { url: 'https://b.com', label: 'BigModel' }
+    ]);
+
+    // 清空首行备注且无档位：退回纯字符串形态（不落盘空 label）。
+    const firstLabel = page.elements.effortTargetList.children[0].options[2];
+    firstLabel.value = '   ';
+    await firstLabel.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.deepEqual(patched[1].value, ['https://a.com', { url: 'https://b.com', label: 'BigModel' }]);
+});
+
+test('page script: scale target label input coexists with ratio', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            const body = JSON.parse(options.body);
+            patched.push(body);
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: false,
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: true, ratio: 0.5, baseUrls: body.value }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: false,
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: {
+                    enabled: true, ratio: 0.5,
+                    baseUrls: [{ url: 'https://a.com', ratio: 0.25, label: '某网关' }]
+                }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    const row = page.elements.scaleTargetList.children[0];
+    // [URL, 比例, 备注, 删除]：比例与备注同时回填。
+    assert.equal(row.options[1].value, '0.25');
+    assert.equal(row.options[2].className, 'target-label');
+    assert.equal(row.options[2].value, '某网关');
+
+    row.options[2].value = '火山方舟';
+    await row.options[2].dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched[0].key, 'usageScale.baseUrls');
+    // 比例与备注同时存在于同一对象条目。
+    assert.deepEqual(patched[0].value, [{ url: 'https://a.com', ratio: 0.25, label: '火山方舟' }]);
+});
+
 test('page script: usageScale target rows have no level select', async (t) => {
     const page = createPageHarness(({ url, options }) => {
         if (url === '/api/bootstrap') {
@@ -1329,12 +1456,13 @@ test('page script: usageScale target rows have no level select', async (t) => {
     await flushPageMicrotasks();
 
     const row = page.elements.scaleTargetList.children[0];
-    // 加比例输入框后为 [URL input, 比例 input, 删除按钮] 三个子元素，
-    // 删除按钮位于 options[2]。
-    assert.equal(row.options.length, 3);
+    // 加比例与备注输入框后为 [URL input, 比例 input, 备注 input, 删除按钮]
+    // 四个子元素，删除按钮位于 options[3]。
+    assert.equal(row.options.length, 4);
     assert.equal(row.options[0].className, 'target-url');
     assert.equal(row.options[1].className, 'target-ratio');
-    assert.equal(row.options[2].className, 'target-remove');
+    assert.equal(row.options[2].className, 'target-label');
+    assert.equal(row.options[3].className, 'target-remove');
 });
 
 async function startApi({
@@ -2497,6 +2625,89 @@ test('API: PATCH effortOverride.baseUrls accepts mixed string / object entries',
         ['https://a.com', { url: 'https://a.com/', level: 'max' }]);
 });
 
+test('API: PATCH effort / usageScale baseUrls accepts and trims label', async (t) => {
+    let update = null;
+    const api = await startApi({
+        read: () => ({
+            effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+            usageScale: { enabled: true, ratio: 0.5, baseUrls: [] }
+        }),
+        write: (partial) => {
+            update = partial;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    const effort = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            key: 'effortOverride.baseUrls',
+            value: [
+                { url: 'https://a.com', label: '  火山方舟  ' },
+                // 备注为空 / 全空白：不落盘 label 键，URL 条目保留。
+                { url: 'https://b.com', level: 'max', label: '' },
+                { url: 'https://c.com', label: '   ' }
+            ]
+        })
+    });
+    assert.equal(effort.status, 200);
+    assert.deepEqual(update, {
+        effortOverride: {
+            baseUrls: [
+                { url: 'https://a.com', label: '火山方舟' },
+                { url: 'https://b.com', level: 'max' },
+                { url: 'https://c.com' }
+            ]
+        }
+    });
+
+    const scale = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            key: 'usageScale.baseUrls',
+            value: [{ url: 'https://a.com', ratio: 0.25, label: ' 某网关 ' }]
+        })
+    });
+    assert.equal(scale.status, 200);
+    assert.deepEqual(update, {
+        usageScale: { baseUrls: [{ url: 'https://a.com', ratio: 0.25, label: '某网关' }] }
+    });
+});
+
+test('API: PATCH baseUrls rejects non-string / over-length label with 400', async (t) => {
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({
+            effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+            usageScale: { enabled: true, ratio: 0.5, baseUrls: [] }
+        }),
+        write: () => {
+            writes += 1;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    for (const [key, item] of [
+        ['effortOverride.baseUrls', { url: 'https://a.com', label: 42 }],
+        ['effortOverride.baseUrls', { url: 'https://a.com', label: null }],
+        ['effortOverride.baseUrls', { url: 'https://a.com', label: 'x'.repeat(81) }],
+        ['usageScale.baseUrls', { url: 'https://a.com', ratio: 0.5, label: true }],
+        ['usageScale.baseUrls', { url: 'https://a.com', label: 'x'.repeat(81) }]
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ key, value: [item] })
+        });
+        assert.equal(response.status, 400, `${key} ${JSON.stringify(item)}`);
+    }
+    assert.equal(writes, 0);
+});
+
 test('API: PATCH usageScale.baseUrls accepts mixed string / {url,ratio} entries', async (t) => {
     let update = null;
     const api = await startApi({
@@ -2603,7 +2814,7 @@ test('page script: usageScale target rows have ratio input', async (t) => {
     assert.equal(strRow.options[1].value, '');
 });
 
-// effort 行保持档位下拉、无比例框：行元素为 [input, select, 删除按钮]。
+// effort 行保持档位下拉、无比例框：行元素为 [input, select, 备注, 删除按钮]。
 test('page script: effort target rows have level select, no ratio input', async (t) => {
     const page = createPageHarness(({ url, options }) => {
         if (url === '/api/bootstrap') {
@@ -2628,10 +2839,11 @@ test('page script: effort target rows have level select, no ratio input', async 
     await flushPageMicrotasks();
 
     const row = page.elements.effortTargetList.children[0];
-    assert.equal(row.options.length, 3);
+    assert.equal(row.options.length, 4);
     assert.equal(row.options[0].className, 'target-url');
     assert.equal(row.options[1].className, 'target-level');
-    assert.equal(row.options[2].className, 'target-remove');
+    assert.equal(row.options[2].className, 'target-label');
+    assert.equal(row.options[3].className, 'target-remove');
 });
 
 test('API: PATCH effortOverride.baseUrls rejects invalid mixed entry shapes with 400', async (t) => {

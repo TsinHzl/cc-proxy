@@ -46,6 +46,9 @@ const MAX_LINES = 100;
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
 // 自定义系统提示词上限：与 thinking-text.js 的 MAX_THINKING_TEXT_BLOCK_BYTES 对齐。
 const MAX_PROMPT_BYTES = 256 * 1024;
+// 目标上游备注上限（字符数）：备注仅用于人工识别厂商 / 用途，不参与转发，
+// 超长或非字符串时丢弃该字段（保留 URL 条目本身，与逐字段宽容策略一致）。
+const MAX_TARGET_LABEL_LENGTH = 80;
 
 // 供 settings-cli 显示与 e2e 断言的默认落盘路径。
 export function defaultConfigPath() {
@@ -78,14 +81,24 @@ function cleanBaseUrls(input) {
     return clean;
 }
 
+// 条目备注归一：trim 后非空、长度不超上限的字符串；其余（非字符串 / 空 /
+// 超长）返回 null，由调用方决定「丢弃该字段」而非丢弃整条 URL。
+function cleanTargetLabel(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (!text || text.length > MAX_TARGET_LABEL_LENGTH) return null;
+    return text;
+}
+
 // usageScale.baseUrls 逐项校验，条目为混合形态（与 cleanEffortTargets 完全同构，
 // 仅「值」为数值比例 ratio 而非档位）：
 // - 字符串且 URL 合法 → 保留字符串（语义：继承全局 ratio）
-// - 对象且 url 合法 → ratio 为有限数 ∈ (0,10] 时保留 { url, ratio }；ratio 缺失
-//   或非法则归一为纯字符串（「未指定比例」只有字符串一种存储表达）
+// - 对象且 url 合法 → ratio 为有限数 ∈ (0,10] 时保留 ratio，label 合法时保留
+//   label；两者都缺失 / 非法则归一为纯字符串（「未指定比例且无备注」只有字符串
+//   一种存储表达）
 // - 其余（非字符串非对象、url 非法）逐项丢弃；非数组归一为空列表
 // - 去重：以 normalizeBaseUrl 规范串判重，已出现过的一律跳过并保留首次出现的
-//   形态与比例（与 cleanEffortTargets 同口径，跨形态判重）。
+//   形态、比例与备注（与 cleanEffortTargets 同口径，跨形态判重）。
 function cleanScaleTargets(input) {
     if (!Array.isArray(input)) return [];
     const seen = new Set();
@@ -97,7 +110,11 @@ function cleanScaleTargets(input) {
         const key = normalizeBaseUrl(url);
         if (key === null || seen.has(key)) continue;
         seen.add(key);
-        clean.push(isObject && isValidScaleRatio(entry.ratio) ? { url, ratio: entry.ratio } : url);
+        const extra = {};
+        if (isObject && isValidScaleRatio(entry.ratio)) extra.ratio = entry.ratio;
+        const label = isObject ? cleanTargetLabel(entry.label) : null;
+        if (label !== null) extra.label = label;
+        clean.push(Object.keys(extra).length ? { url, ...extra } : url);
     }
     return clean;
 }
@@ -108,13 +125,14 @@ function isValidScaleRatio(value) {
 }
 
 // effortOverride.baseUrls 逐项校验，条目为混合形态：
-// - 字符串且 URL 合法 → 保留字符串（语义：继承全局档位）
-// - 对象且 url 合法 → level ∈ EFFORT_LEVELS 时保留 { url, level }；level 缺失
-//   或非法则归一为纯字符串（「未指定档位」只有字符串一种存储表达）
+// - 字符串且 URL 合法 → 保留字符串（语义：继承全局档位、无备注）
+// - 对象且 url 合法 → level ∈ EFFORT_LEVELS 时保留 level，label 合法时保留
+//   label；两者都缺失 / 非法则归一为纯字符串（「未指定档位且无备注」只有字符串
+//   一种存储表达）
 // - 其余（非字符串非对象、url 非法）逐项丢弃；非数组归一为空列表
 // - 去重：以 normalizeBaseUrl 规范串判重，已出现过的一律跳过并保留首次出现的
-//   形态与档位（故 "https://a.com" 与 "https://a.com/"、以及字符串与对象形态
-//   指向同一 URL 均判为重复）——否则路径长度相同时，排序稳定性会成为隐式的
+//   形态、档位与备注（故 "https://a.com" 与 "https://a.com/"、以及字符串与对象
+//   形态指向同一 URL 均判为重复）——否则路径长度相同时，排序稳定性会成为隐式的
 //   档位胜出规则。
 function cleanEffortTargets(input) {
     if (!Array.isArray(input)) return [];
@@ -127,7 +145,11 @@ function cleanEffortTargets(input) {
         const key = normalizeBaseUrl(url);
         if (key === null || seen.has(key)) continue;
         seen.add(key);
-        clean.push(isObject && EFFORT_LEVELS.has(entry.level) ? { url, level: entry.level } : url);
+        const extra = {};
+        if (isObject && EFFORT_LEVELS.has(entry.level)) extra.level = entry.level;
+        const label = isObject ? cleanTargetLabel(entry.label) : null;
+        if (label !== null) extra.label = label;
+        clean.push(Object.keys(extra).length ? { url, ...extra } : url);
     }
     return clean;
 }
@@ -137,6 +159,7 @@ function cleanEffortTargets(input) {
 // level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）；
 // effortOverride.baseUrls 走 cleanEffortTargets（混合形态 + 规范串去重），
 // usageScale.baseUrls 走 cleanScaleTargets（混合形态 + 规范串去重），两者非法项均丢弃；
+// 条目的 label（备注）非字符串 / 空 / 超长时仅丢弃该字段，不丢 URL 条目；
 // systemPromptOverride.enabled 非布尔回退 false，prompt 非字符串或超 256KB 回退 ''。
 function normalizeConfig(raw) {
     const config = {

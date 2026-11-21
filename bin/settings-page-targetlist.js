@@ -13,9 +13,11 @@ export const SCALE_TARGET_LIST = {
     title: '目标上游 Base URL（留空 = 对所有上游缩放）',
     hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时缩放；未配置时对所有上游生效。'
         + '每行可选缩放比例：「留空」表示用上方全局比例；多条命中时路径更长（更具体）的条目录生效。'
-        + '修改后下次启动会话生效。',
+        + '备注仅用于标识厂商，不参与转发。修改后下次启动会话生效。',
     // 行内数值比例输入声明：空值 = 继承全局比例（提交为纯字符串形态）。
-    ratio: true
+    ratio: true,
+    // 行内备注输入声明：空值 = 无备注（不写入配置）。
+    label: true
 };
 
 export const EFFORT_TARGET_LIST = {
@@ -24,9 +26,11 @@ export const EFFORT_TARGET_LIST = {
     title: '目标上游 Base URL（留空 = 对所有上游覆写）',
     hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时覆写 effort 档位；未配置时对所有上游生效。'
         + '每行可选档位：「继承全局」表示用上方全局档位；多条命中时路径更长（更具体）的条目录生效。'
-        + '修改后下次启动会话生效。',
+        + '备注仅用于标识厂商，不参与转发。修改后下次启动会话生效。',
     // 行内档位下拉的枚举：空值 = 继承全局档位（提交为纯字符串形态）。
-    levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']
+    levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    // 行内备注输入声明：空值 = 无备注（不写入配置）。
+    label: true
 };
 
 export const TARGET_LISTS = [SCALE_TARGET_LIST, EFFORT_TARGET_LIST];
@@ -56,6 +60,10 @@ const TARGET_LIST_STYLES = `
 .target-ratio:hover:not(:disabled) { border-color: var(--accent); }
 .target-ratio:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .target-ratio:disabled { cursor: wait; opacity: .62; }
+.target-label { flex: 0 0 auto; width: 140px; height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card-bg); color: var(--text); font: inherit; font-size: 12px; }
+.target-label:hover:not(:disabled) { border-color: var(--accent); }
+.target-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.target-label:disabled { cursor: wait; opacity: .62; }
 .targets-hint { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
 `;
 
@@ -84,17 +92,21 @@ export function buildTargetListScript(lists) {
         key: item.key,
         group: item.group,
         levels: item.levels ?? null,
-        ratio: item.ratio ?? false
+        ratio: item.ratio ?? false,
+        label: item.label ?? false
     })));
     return `
     // 定向目标上游列表：动态行增删 + blur 时全量提交 <group>.baseUrls。
-    // rows 以内部数组跟踪（不依赖 DOM 查询），行元素为 [input, remove]。
+    // rows 以内部数组跟踪（不依赖 DOM 查询），行元素为 [input, 可选的
+    // 比例 / 档位控件, 可选备注输入, remove]。
     var TARGET_LISTS = ` + spec + `;
     var targetListEntries = TARGET_LISTS.map((spec) => {
         var rows = [];
         var listEl = document.getElementById(spec.key + 'TargetList');
         var addEl = document.getElementById(spec.key + 'TargetAdd');
         var apiKey = spec.group + '.baseUrls';
+        // 备注长度上限：与 src/settings.js 的 MAX_TARGET_LABEL_LENGTH 对齐。
+        var MAX_LABEL_LENGTH = 80;
 
         function syncControls(disabled) {
             if (addEl) addEl.disabled = disabled;
@@ -102,13 +114,14 @@ export function buildTargetListScript(lists) {
                 entry.input.disabled = disabled;
                 if (entry.levelSelect) entry.levelSelect.disabled = disabled;
                 if (entry.ratioInput) entry.ratioInput.disabled = disabled;
+                if (entry.labelInput) entry.labelInput.disabled = disabled;
                 entry.remove.disabled = disabled;
             }
         }
 
-        // 产出混合形态：比例为空 → 纯字符串（继承全局），否则 { url, ratio }；
-        // 档位为空 → 纯字符串（继承全局），否则 { url, level }。两者由列表
-        // 描述 only 决定（ratio 列表无档位，levels 列表无比例）。
+        // 产出混合形态：比例与备注均为空 → 纯字符串（继承全局、无备注）；
+        // 否则对象 { url, ratio?, level?, label? }。比例 / 档位由列表描述
+        // 决定（ratio 列表无档位，levels 列表无比例），备注为两列表共用。
         function currentValues() {
             const values = [];
             for (const entry of rows) {
@@ -116,9 +129,16 @@ export function buildTargetListScript(lists) {
                 if (!url) continue;
                 const ratio = entry.ratioInput ? entry.ratioInput.value.trim() : '';
                 const level = entry.levelSelect ? entry.levelSelect.value : '';
-                if (ratio) values.push({ url, ratio: Number(ratio) });
-                else if (level) values.push({ url, level });
-                else values.push(url);
+                const label = entry.labelInput ? entry.labelInput.value.trim() : '';
+                if (!ratio && !level && !label) {
+                    values.push(url);
+                    continue;
+                }
+                const item = { url };
+                if (ratio) item.ratio = Number(ratio);
+                else if (level) item.level = level;
+                if (label) item.label = label;
+                values.push(item);
             }
             return values;
         }
@@ -169,6 +189,21 @@ export function buildTargetListScript(lists) {
                 ratioInput.addEventListener('input', () => {});
                 ratioInput.addEventListener('blur', () => submit());
             }
+            // 备注输入仅在该列表声明 label 时创建（两列表当前均声明）。
+            // 仅用于人工识别厂商 / 用途：不参与转发与匹配，可为空。
+            let labelInput = null;
+            if (spec.label) {
+                labelInput = document.createElement('input');
+                labelInput.type = 'text';
+                labelInput.className = 'target-label';
+                labelInput.maxLength = MAX_LABEL_LENGTH;
+                labelInput.setAttribute('aria-label', '该上游的备注（厂商 / 用途，可留空）');
+                labelInput.placeholder = '备注（厂商 / 用途）';
+                // 对象输入（{ url, label }）回填备注；字符串输入即无备注。
+                labelInput.value = (value && typeof value === 'object' && value.label)
+                    ? String(value.label) : '';
+                labelInput.addEventListener('blur', () => submit());
+            }
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'target-remove';
@@ -177,9 +212,10 @@ export function buildTargetListScript(lists) {
             row.appendChild(input);
             if (ratioInput) row.appendChild(ratioInput);
             if (levelSelect) row.appendChild(levelSelect);
+            if (labelInput) row.appendChild(labelInput);
             row.appendChild(remove);
             listEl.appendChild(row);
-            const entry = { row, input, levelSelect, ratioInput, remove };
+            const entry = { row, input, levelSelect, ratioInput, labelInput, remove };
             rows.push(entry);
             input.addEventListener('blur', () => submit());
             // pointerdown 仅阻止焦点转移（避免输入框 blur 提交把按钮置 disabled
@@ -208,7 +244,8 @@ export function buildTargetListScript(lists) {
         }
 
         // 本地校验：逐项须为可解析的 http(s) URL；条目比例（若该列表声明）
-        // 须为有限数 ∈ (0,10]；任一非法时不提交并回滚展示。
+        // 须为有限数 ∈ (0,10]；条目备注（若该列表声明）须不超长；任一非法时
+        // 不提交并回滚展示。
         function isUrl(value) {
             try {
                 const parsed = new URL(value);
@@ -222,7 +259,10 @@ export function buildTargetListScript(lists) {
         }
         function isValidEntry(item) {
             if (typeof item === 'string') return isUrl(item);
-            return isUrl(item.url) && (item.ratio === undefined || isValidRatio(item.ratio));
+            return isUrl(item.url)
+                && (item.ratio === undefined || isValidRatio(item.ratio))
+                && (item.label === undefined
+                    || (typeof item.label === 'string' && item.label.length <= MAX_LABEL_LENGTH));
         }
 
         async function submit() {

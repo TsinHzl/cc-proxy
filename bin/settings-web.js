@@ -25,6 +25,8 @@ const BOOTSTRAP_NONCE_TTL_MS = 30_000;
 const MAX_BOOTSTRAP_NONCES = 256;
 // 自定义系统提示词上限：与 src/settings.js 的 MAX_PROMPT_BYTES 一致。
 const MAX_PROMPT_BYTES = 256 * 1024;
+// 目标上游备注上限：与 src/settings.js 的 MAX_TARGET_LABEL_LENGTH 一致。
+const MAX_TARGET_LABEL_LENGTH = 80;
 const ALLOWED_KEYS = new Set([
     'forwardSuggestionMode',
     'thinkingAsText',
@@ -324,16 +326,25 @@ function isHttpUrl(value) {
     }
 }
 
+// 条目备注（label）校验：缺省合法；存在时须为字符串且 trim 后不超过 80 字符
+//（空串 / 全空白按「未填写」处理，落盘时省略该字段；与 settings.js
+// cleanTargetLabel 同口径）。备注不参与转发，仅用于识别厂商。
+function isValidTargetLabel(value) {
+    return value === undefined
+        || (typeof value === 'string' && value.trim().length <= MAX_TARGET_LABEL_LENGTH);
+}
+
 // usageScale.baseUrls 校验：混合数组——字符串项须为合法 http(s) URL；
-// 对象项须为非数组对象、url 合法、ratio 若存在须为有限数 ∈ (0,10]。任一
-// 非法项整次提交判 400（与 settings.js cleanScaleTargets 同口径，差异在于
-// 此处判 400 而非静默丢弃）。
+// 对象项须为非数组对象、url 合法、ratio 若存在须为有限数 ∈ (0,10]、label 若存在
+// 须为非空且不超 80 字符的字符串。任一非法项整次提交判 400（与 settings.js
+// cleanScaleTargets 同口径，差异在于此处判 400 而非静默丢弃）。
 function isValidScaleTargetArray(value) {
     if (!Array.isArray(value)) return false;
     return value.every((item) => {
         if (typeof item === 'string') return isHttpUrl(item);
         if (item === null || typeof item !== 'object' || Array.isArray(item)) return false;
         if (!isHttpUrl(item.url)) return false;
+        if (!isValidTargetLabel(item.label)) return false;
         if (item.ratio === undefined) return true;
         return isValidScaleRatio(item.ratio);
     });
@@ -345,15 +356,16 @@ function isValidScaleRatio(value) {
 }
 
 // effortOverride.baseUrls 校验：混合数组——字符串项须为合法 http(s) URL；
-// 对象项须为非数组对象、url 合法、level 若存在须 ∈ EFFORT_LEVELS。任一非法
-// 项整次提交判 400（与 settings.js cleanEffortTargets 同口径，差异在于此处
-// 判 400 而非静默丢弃）。
+// 对象项须为非数组对象、url 合法、level 若存在须 ∈ EFFORT_LEVELS、label 若存在
+// 须为非空且不超 80 字符的字符串。任一非法项整次提交判 400（与 settings.js
+// cleanEffortTargets 同口径，差异在于此处判 400 而非静默丢弃）。
 function isValidEffortTargetArray(value) {
     if (!Array.isArray(value)) return false;
     return value.every((item) => {
         if (typeof item === 'string') return isHttpUrl(item);
         if (item === null || typeof item !== 'object' || Array.isArray(item)) return false;
         if (!isHttpUrl(item.url)) return false;
+        if (!isValidTargetLabel(item.label)) return false;
         return item.level === undefined || EFFORT_LEVELS.has(item.level);
     });
 }
@@ -424,23 +436,21 @@ async function handleSettingsPatch(context, req, res, host) {
         // 顶层 key 直接映射，writeConfig 逐字段合并保留未提交字段。
         const [group, leaf] = body.key.split('.');
         // baseUrls 在边界处按 group 归一：usageScale 为混合数组，字符串项
-        // trim，对象项只保留 url / ratio 两键（丢弃 ratio 缺失时的 undefined
-        // 键，避免落盘出现空比例字段），与 settings.js cleanScaleTargets 的
-        // 落盘口径一致；effortOverride 同样只保留 url / level 两键。
+        // trim，对象项只保留 url / ratio / label 三键（丢弃未提供的可选键，
+        // 避免落盘出现空比例 / 空备注字段），与 settings.js cleanScaleTargets
+        // 的落盘口径一致；effortOverride 同样只保留 url / level / label 三键。
+        const normalizeTargetEntry = (item, valueKey) => {
+            if (typeof item === 'string') return item.trim();
+            const entry = { url: item.url.trim() };
+            if (item[valueKey] !== undefined) entry[valueKey] = item[valueKey];
+            // 备注仅在有内容时落盘：全空白的 label 等同未填写（纯字符串语义）。
+            if (item.label !== undefined && item.label.trim()) entry.label = item.label.trim();
+            return entry;
+        };
         const value = body.key === 'usageScale.baseUrls'
-            ? body.value.map((item) => {
-                if (typeof item === 'string') return item.trim();
-                return item.ratio === undefined
-                    ? { url: item.url.trim() }
-                    : { url: item.url.trim(), ratio: item.ratio };
-            })
+            ? body.value.map((item) => normalizeTargetEntry(item, 'ratio'))
             : body.key === 'effortOverride.baseUrls'
-                ? body.value.map((item) => {
-                    if (typeof item === 'string') return item.trim();
-                    return item.level === undefined
-                        ? { url: item.url.trim() }
-                        : { url: item.url.trim(), level: item.level };
-                })
+                ? body.value.map((item) => normalizeTargetEntry(item, 'level'))
                 : body.value;
         const patch = leaf
             ? { [group]: { [leaf]: value } }

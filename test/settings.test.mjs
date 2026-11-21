@@ -179,6 +179,58 @@ test('readConfig: effortOverride.baseUrls dedupes by normalized URL, keeping fir
     ]);
 });
 
+test('readConfig: effortOverride.baseUrls keeps valid label, drops invalid label only', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: { baseUrls: [
+            { url: 'https://a.com', label: '火山方舟' },
+            { url: 'https://b.com', level: 'max', label: '  OpenAI 兼容  ' },
+            { url: 'https://c.com', label: '' },            // 空串 → 丢弃 label，保留 URL
+            { url: 'https://d.com', label: '   ' },         // 全空白 → 同上
+            { url: 'https://e.com', label: 42 },            // 非字符串 → 同上
+            { url: 'https://f.com', label: 'x'.repeat(81) } // 超 80 字符 → 同上
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride.baseUrls, [
+        { url: 'https://a.com', label: '火山方舟' },
+        { url: 'https://b.com', level: 'max', label: 'OpenAI 兼容' },
+        'https://c.com',
+        'https://d.com',
+        'https://e.com',
+        'https://f.com'
+    ]);
+});
+
+test('readConfig: usageScale.baseUrls keeps valid label and ratio together', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        usageScale: { ratio: 0.5, baseUrls: [
+            { url: 'https://a.com', ratio: 0.25, label: '某网关' },
+            { url: 'https://b.com', label: '仅备注' },
+            { url: 'https://c.com', ratio: 2 },
+            { url: 'https://d.com', label: 'x'.repeat(81) }
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).usageScale.baseUrls, [
+        { url: 'https://a.com', ratio: 0.25, label: '某网关' },
+        { url: 'https://b.com', label: '仅备注' },
+        { url: 'https://c.com', ratio: 2 },
+        'https://d.com'
+    ]);
+});
+
+test('readConfig: dedupe keeps first entry label', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        effortOverride: { baseUrls: [
+            { url: 'https://a.com', label: '首项' },
+            { url: 'https://a.com/', label: '重复项' }
+        ] }
+    }));
+    assert.deepEqual(readConfig(dir).effortOverride.baseUrls,
+        [{ url: 'https://a.com', label: '首项' }]);
+});
+
 test('readConfig: legacy string[] effortOverride.baseUrls stays equivalent', (t) => {
     // 旧配置读入后语义不变：全部条目为字符串 = 全部继承全局档位。
     const dir = tmpDir(t);

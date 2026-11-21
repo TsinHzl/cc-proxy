@@ -198,7 +198,7 @@ previous behavior). Key points:
     "level": "high",
     "baseUrls": [
       "https://a.example.com",
-      { "url": "https://gateway.example.com/api", "level": "max" }
+      { "url": "https://gateway.example.com/api", "level": "max", "label": "main gateway" }
     ]
   }
 }
@@ -233,6 +233,13 @@ the configured level before forwarding, regardless of CC's local setting. Key po
   `a.example.com` receives the global `high`, and non-matching upstreams keep CC's local
   level. Each row in the settings page has a level dropdown, where `继承全局` corresponds
   to the string form.
+- **Per-entry label**: an object entry may carry an optional `label` (up to 80 characters)
+  to annotate which vendor / purpose the URL serves (e.g. "Volcengine Ark"). The label is
+  **display-only**: it takes no part in matching or forwarding and never affects the level.
+  Each row in the settings page has a label input; leaving it blank keeps the entry in the
+  string form (or an object form with only the level). A hand-edited `label` that is
+  empty, all whitespace, non-string or over-length drops only that field — the URL entry
+  itself is kept.
 - **More specific wins**: a single upstream can match several entries (say both
   `https://a.com` and `https://a.com/api`); the **entry with the longer (more specific)
   path** takes effect — upstream `https://a.com/api/x` uses the `/api` entry's level while
@@ -244,7 +251,9 @@ the configured level before forwarding, regardless of CC's local setting. Key po
 - **Config tolerance**: an invalid item in a hand-edited `config.json` (a string that
   cannot be parsed or is not http/https; an object with an invalid `url` or a `level`
   outside the enum) is dropped item by item; an object missing `level` or carrying an
-  invalid one is normalized to the string form (i.e. it inherits the global level); if
+  invalid one is normalized to the string form (i.e. it inherits the global level); an
+  invalid `label` (non-string / empty / over 80 characters) drops only that field while
+  the URL entry is kept; if
   **all** items are invalid the list degrades to empty → equivalent to a blanket override,
   so take care. The legacy `["https://a.com"]` string-only config needs no migration — its
   semantics equal "every entry inherits the global level".
@@ -258,7 +267,7 @@ the configured level before forwarding, regardless of CC's local setting. Key po
     "ratio": 0.5,
     "baseUrls": [
       "https://a.example.com",
-      { "url": "https://gateway.example.com/api", "ratio": 0.25 }
+      { "url": "https://gateway.example.com/api", "ratio": 0.25, "label": "main gateway" }
     ]
   }
 }
@@ -295,6 +304,10 @@ output-length calculations stay unaffected). Key points:
   by `0.25`, `a.example.com` by the global `0.5`, and non-matching upstreams pass through
   1:1. Each row in the settings page has a ratio input, where leaving it blank corresponds
   to the string form (inheriting the global ratio).
+- **Per-entry label**: same as the Effort override — an object entry may carry an optional
+  `label` (up to 80 characters) naming the vendor / purpose. It is display-only and takes
+  no part in forwarding; each row has a label input, and leaving it blank keeps the field
+  out of the config. An invalid or over-length `label` drops only that field.
 - **More specific wins**: a single upstream can match several entries (say both
   `https://a.com` and `https://a.com/api`); the **entry with the longer (more specific)
   path** takes effect, and the same URL counts only once (after trailing-slash
@@ -308,9 +321,11 @@ output-length calculations stay unaffected). Key points:
   (unparsable or not http/https; an object with an invalid `url`, or a `ratio` that is not
   a finite number within (0, 10]) is dropped item by item; an object missing `ratio` or
   carrying an invalid one is normalized to the string form (i.e. inheriting the global
-  ratio); if **all** items are invalid the list degrades to empty → equivalent to blanket
-  scaling, so take care. The legacy `["https://a.com"]` string-only config needs no
-  migration — its semantics equal "every entry inherits the global ratio".
+  ratio); an invalid `label` (non-string / empty / over 80 characters) drops only that
+  field while the URL entry is kept; if **all** items are invalid the list degrades to
+  empty → equivalent to blanket scaling, so take care. The legacy `["https://a.com"]`
+  string-only config needs no migration — its semantics equal "every entry inherits the
+  global ratio".
 
 ### Suggestion Mode
 
