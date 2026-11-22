@@ -149,6 +149,159 @@ test('non-suggestion CC request passes through normally in both switch states', 
     }
 });
 
+// ---- 定向列表（forwardSuggestionMode: { enabled, baseUrls }）----
+
+// 以主上游完整 base 为条目 URL：normalizeBaseUrl 归一后与实际 base 同串。
+const primaryBaseOf = (upstream) => `http://127.0.0.1:${upstream.address().port}`;
+
+test('suggestion policy: baseUrls forward=true overrides global intercept', async () => {
+    const { state, started } = startMockUpstream();
+    const upstream = await started;
+    const proxy = createProxyServer({
+        baseUrlEnv: primaryBaseOf(upstream),
+        forwardSuggestionMode: {
+            enabled: false,
+            baseUrls: [{ url: primaryBaseOf(upstream), forward: true }]
+        }
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST', headers: CC_HEADERS, body: suggestionBody
+        });
+        await res.text();
+        assert.equal(res.status, 200);
+        // 命中条目强制转发：建议请求触达上游（非空响应来自 mock）。
+        assert.equal(state.bodies.length, 1);
+        assert.ok(state.bodies[0].includes(SUGGESTION_MARKER));
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('suggestion policy: baseUrls forward=false overrides global forward', async () => {
+    const { state, started } = startMockUpstream();
+    const upstream = await started;
+    const proxy = createProxyServer({
+        baseUrlEnv: primaryBaseOf(upstream),
+        forwardSuggestionMode: {
+            enabled: true,
+            baseUrls: [{ url: primaryBaseOf(upstream), forward: false }]
+        }
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST', headers: CC_HEADERS, body: suggestionBody
+        });
+        const parsed = await res.json();
+        // 命中条目强制拦截：返回结构完整的空消息，上游零触达。
+        assert.equal(parsed.stop_reason, 'end_turn');
+        assert.deepEqual(parsed.content, [{ type: 'text', text: '' }]);
+        assert.equal(state.bodies.length, 0);
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+test('suggestion policy: unmatched upstream inherits global switch', async () => {
+    const { state, started } = startMockUpstream();
+    const upstream = await started;
+    // 列表指向另一个上游：本条请求未命中任何条目 → 按全局 enabled=false 拦截。
+    const proxy = createProxyServer({
+        baseUrlEnv: primaryBaseOf(upstream),
+        forwardSuggestionMode: {
+            enabled: false,
+            baseUrls: [{ url: 'https://other.example.com', forward: true }]
+        }
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST', headers: CC_HEADERS, body: suggestionBody
+        });
+        const parsed = await res.json();
+        assert.equal(parsed.stop_reason, 'end_turn');
+        assert.equal(state.bodies.length, 0);
+    } finally {
+        proxy.closeAllConnections?.();
+        upstream.closeAllConnections?.();
+        proxy.close();
+        upstream.close();
+    }
+});
+
+// 拦截请求不占用 half-open 探测名额：主上游 open + 存在备用时，放行路径会经
+// finalizeTargets 调 probe()；拦截路径必须在 probe 之前返回。
+test('suggestion intercept never consumes half-open probe slot', async () => {
+    const primary = await startMockUpstream().started;
+    const { state: backupState, started: backupStarted } = startMockUpstream();
+    const backup = await backupStarted;
+    const primaryHost = '127.0.0.1';
+    const makeBreaker = () => {
+        const probed = [];
+        return {
+            probed,
+            isOpen: (id) => id === primaryHost,
+            getState: (id) => (id === primaryHost ? 'open' : 'closed'),
+            probe: (id) => {
+                probed.push(id);
+                return { allowed: true, isProbe: true };
+            },
+            recordSuccess: () => {},
+            recordFailure: () => {},
+            getSnapshot: () => ({})
+        };
+    };
+
+    const run = async (forwardSuggestionMode) => {
+        const breaker = makeBreaker();
+        const proxy = createProxyServer({
+            baseUrlEnv: primaryBaseOf(primary),
+            forwardSuggestionMode,
+            failoverUpstreams: [{ name: 'backup', baseUrl: primaryBaseOf(backup) }],
+            upstreamBreaker: breaker
+        });
+        await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+        try {
+            const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+                method: 'POST', headers: CC_HEADERS, body: suggestionBody
+            });
+            await res.text();
+        } finally {
+            proxy.closeAllConnections?.();
+            proxy.close();
+        }
+        return breaker.probed;
+    };
+
+    try {
+        // 全局拦截：不触达任何上游、不调 probe。
+        const intercepted = await run({ enabled: false, baseUrls: [] });
+        assert.deepEqual(intercepted, []);
+        assert.equal(backupState.bodies.length, 0);
+
+        // 全局转发：主上游 open → 选路切到备用并占用其探测名额。
+        const forwarded = await run({ enabled: true, baseUrls: [] });
+        assert.deepEqual(forwarded, ['backup']);
+        assert.equal(backupState.bodies.length, 1);
+    } finally {
+        primary.closeAllConnections?.();
+        backup.closeAllConnections?.();
+        primary.close();
+        backup.close();
+    }
+});
+
 test('non-CC client sending suggestion payload: forwarded verbatim (unaffected)', async () => {
     const { state, started } = startMockUpstream();
     const upstream = await started;
@@ -167,6 +320,58 @@ test('non-CC client sending suggestion payload: forwarded verbatim (unaffected)'
         upstream.closeAllConnections?.();
         proxy.close();
         upstream.close();
+    }
+});
+
+// probe 被并发占用 → finalizeTargets 回退到备用上游；策略须按真实服务上游复核，
+// 否则备用的 forward:false 会被绕过（本次 CR High 修复的回归测试）。
+test('probe rejected: fallback upstream forward=false still intercepts', async () => {
+    const primary = await startMockUpstream().started;
+    const { state: backupState, started: backupStarted } = startMockUpstream();
+    const backup = await backupStarted;
+    const primaryHost = '127.0.0.1';
+    // 模拟：主上游 half-open（isOpen=false 故排为首选），但 probe 名额被并发占用。
+    const probed = [];
+    const breaker = {
+        isOpen: () => false,
+        getState: (id) => (id === primaryHost ? 'half-open' : 'closed'),
+        probe: (id) => {
+            probed.push(id);
+            return { allowed: false, isProbe: false };
+        },
+        recordSuccess: () => {},
+        recordFailure: () => {},
+        getSnapshot: () => ({})
+    };
+    const proxy = createProxyServer({
+        baseUrlEnv: primaryBaseOf(primary),
+        forwardSuggestionMode: {
+            enabled: true,
+            baseUrls: [{ url: primaryBaseOf(backup), forward: false }]
+        },
+        failoverUpstreams: [{ name: 'backup', baseUrl: primaryBaseOf(backup) }],
+        upstreamBreaker: breaker
+    });
+    await new Promise((r) => proxy.listen(0, '127.0.0.1', r));
+
+    try {
+        const res = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/messages`, {
+            method: 'POST', headers: CC_HEADERS, body: suggestionBody
+        });
+        const parsed = await res.json();
+        // 真实服务上游为 backup（forward:false）→ 拦截，备用上游零触达。
+        assert.equal(parsed.stop_reason, 'end_turn');
+        assert.deepEqual(parsed.content, [{ type: 'text', text: '' }]);
+        assert.equal(backupState.bodies.length, 0);
+        // 主上游 probe 被尝试过一次（预判链路），无溢出重复调用。
+        assert.deepEqual(probed, [primaryHost]);
+    } finally {
+        proxy.closeAllConnections?.();
+        primary.closeAllConnections?.();
+        backup.closeAllConnections?.();
+        proxy.close();
+        primary.close();
+        backup.close();
     }
 });
 

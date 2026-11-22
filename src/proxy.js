@@ -210,7 +210,7 @@ export function createProxyServer({
                     // 规范化完整 base（与匹配侧同源，统一尾斜杠/缺省端口归一）；
                     // 非 http(s) 协议时 normalize 返回 null，回退手工拼接保持
                     // 既有转发行为（该上游永不命中定向列表）。字段名 base 为
-                    // usageScale / effortOverride 两个定向特性的共用判定输入。
+                    // usageScale / effortOverride / forwardSuggestionMode 定向特性的共用判定输入。
                     base: normalizeBaseUrl(item.baseUrl)
                         ?? `${base.protocol}//${base.host}:${base.port}${base.path}`,
                     headers: item.headers,
@@ -270,6 +270,32 @@ export function createProxyServer({
             value: typeof entry === 'string' ? null : entry.level ?? null
         })))
         : null;
+    // Suggestion Mode 转发策略：兼容旧式布尔入参（true → 全量放行）。与
+    // effortOverride / usageScale 不同，定向列表不是全局开关的从属——全局拦截时
+    // 列表仍可对特定上游强制转发，故无论 enabled 真假都要构造条目。
+    const suggestionPolicy = typeof forwardSuggestionMode === 'boolean'
+        ? { enabled: forwardSuggestionMode, baseUrls: [] }
+        : (forwardSuggestionMode && typeof forwardSuggestionMode === 'object'
+            ? forwardSuggestionMode
+            : { enabled: false, baseUrls: [] });
+    const suggestionEnabled = suggestionPolicy.enabled === true;
+    // 条目 value 语义：null = 继承全局开关；true / false = 强制转发 / 强制拦截。
+    // 列表为空 / 全部非法 → null（等效「全部按全局开关」）。
+    const suggestionTargets = buildBaseUrlTargetEntries(
+        (suggestionPolicy.baseUrls ?? []).map((entry) => ({
+            url: typeof entry === 'string' ? entry : entry.url,
+            value: typeof entry === 'string'
+                ? null
+                : (typeof entry.forward === 'boolean' ? entry.forward : null)
+        }))
+    );
+    // 三态解析：未配置列表 / 未命中 / 命中但未指定 → 全局开关；命中且有值 → 该值。
+    const resolveSuggestionForward = (normalizedBase) => {
+        if (suggestionTargets === null) return suggestionEnabled;
+        const resolved = resolveBaseUrlTargetValue(normalizedBase, suggestionTargets);
+        if (resolved === undefined || resolved === null) return suggestionEnabled;
+        return resolved;
+    };
     // 熔断器：未注入时创建默认实例（3 连败 / 30s 冷却）；无备用上游时不创建，
     // 选路层零开销（单上游无熔断意义，保持透传路径最简）。
     const breaker = upstreamBreaker ?? (failoverBases.length ? createUpstreamBreaker() : null);
@@ -315,7 +341,11 @@ export function createProxyServer({
     // - 主上游 open：备用按健康分排序，取首个非 open 上游为首选。
     // - 全部 open：忽略熔断按原顺序尝试全部（熔断不是最终否决）。
     // 无 breaker（单上游或未启用）时走原顺序，零行为变化。
-    const buildTargets = (req, target) => {
+    // 选路拆为两步：orderTargets 只排序且不调用 probe（不占用 half-open 探测
+    // 名额，供 Suggestion Mode 判定「首个实际选中上游」；但内部 isOpen 会惰性
+    // 推进 open→half-open 状态机，不可当纯函数并发复用），finalizeTargets
+    // 承担 probe 副作用（原行为）。
+    const orderTargets = (req, target) => {
         const primaries = [{ target, headers: undefined, name: undefined,
             base: primaryBase }];
         const backups = failoverBases.map((f) => ({
@@ -323,10 +353,13 @@ export function createProxyServer({
                 port: f.address.port, path: `${f.basePath}${req.url}` },
             headers: f.headers,
             name: f.name,
-            // 两个定向特性共用的完整 base（不含请求 path）。
+            // 定向特性共用的完整 base（不含请求 path）。
             base: f.base
         }));
-        if (!breaker || !backups.length) return [...primaries, ...backups];
+        const ordered = [...primaries, ...backups];
+        if (!breaker || !backups.length) {
+            return { ordered, primaryLabel: null, primaryOpen: false, allowed: null };
+        }
 
         const labelOf = (e) => e.name || e.target.host;
         const primaryLabel = labelOf(primaries[0]);
@@ -335,26 +368,37 @@ export function createProxyServer({
         );
 
         const primaryOpen = breaker.isOpen(primaryLabel);
-        let ordered;
+        let sorted;
         if (!primaryOpen) {
-            ordered = [primaries[0], ...rankBackups(backups, healthById)];
+            sorted = [primaries[0], ...rankBackups(backups, healthById)];
         } else {
             const ranked = rankBackups(backups, healthById);
-            ordered = [...ranked, primaries[0]];
+            sorted = [...ranked, primaries[0]];
         }
         const openLabels = new Set(
-            ordered.filter((e) => breaker.isOpen(labelOf(e))).map(labelOf)
+            sorted.filter((e) => breaker.isOpen(labelOf(e))).map(labelOf)
         );
-        const allowed = ordered.filter((e) => !openLabels.has(labelOf(e)));
-        // 全部 open（或全被过滤）：忽略熔断按原顺序尝试全部（兜底）。
-        if (!allowed.length) return ordered;
+        const allowed = sorted.filter((e) => !openLabels.has(labelOf(e)));
+        return {
+            ordered: sorted,
+            primaryLabel,
+            primaryOpen,
+            // 全部 open（或全被过滤）：allowed 为 null，调用方忽略熔断按原顺序
+            // 尝试全部（兜底）。
+            allowed: allowed.length ? allowed : null
+        };
+    };
+
+    // 最终选路（有副作用：占用 half-open 探测名额），行为与拆分前完全一致。
+    const finalizeTargets = ({ ordered, primaryLabel, primaryOpen, allowed }) => {
+        if (!allowed) return ordered;
+        const labelOf = (e) => e.name || e.target.host;
         // 首选若为 half-open 候选（冷却已过），本请求即探测请求，须先经
         // probe() 占用名额；probe 拒绝（并发探测占用）时跳过该上游。
         const head = allowed[0];
-        const headLabel = labelOf(head);
-        if (!primaryOpen && headLabel === primaryLabel
+        if (!primaryOpen && labelOf(head) === primaryLabel
             && breaker.getState(primaryLabel) === 'closed') return allowed; // 仅真 closed 走快路径
-        const verdict = breaker.probe(headLabel);
+        const verdict = breaker.probe(labelOf(head));
         if (verdict.allowed) return allowed;
         return allowed.slice(1).length ? allowed.slice(1) : ordered;
     };
@@ -421,12 +465,17 @@ export function createProxyServer({
                 }
             }
 
-            // Suggestion Mode 拦截（CC UA、开关关闭时）：识别建议请求后直接
-            // 返回结构完整的空响应，不转发上游；拦截路径零 usage 统计、零
-            // debug 日志（该请求不产生任何上游消耗）。非命中或开关打开时走
-            // 原有转发链路。includes 预筛避免主对话请求双重全量 JSON.parse。
-            if (isClaudeCode && !forwardSuggestionMode && bodyBuffer.includes(SUGGESTION_MARKER)) {
-                let suggestionPayload = null;
+            // Suggestion Mode 转发判定（CC UA）：先排序（不占用探测名额），
+            // 再按首个实际选中上游的完整 base 解析三态策略——全局开关为基准，
+            // 命中定向条目可强制转发 / 强制拦截。拦截路径直接返回结构完整的
+            // 空响应，不转发上游、零 usage 统计、零 debug 日志。includes 预筛
+            // 避免主对话请求双重全量 JSON.parse；全局放行且无定向列表时必然
+            // 放行，跳过解析（与旧版开关的性能口径一致）。
+            const targetOrder = orderTargets(req, target);
+            const needsSuggestionEval = !suggestionEnabled || suggestionTargets !== null;
+            let suggestionPayload = null;
+            if (isClaudeCode && needsSuggestionEval
+                && bodyBuffer.includes(SUGGESTION_MARKER)) {
                 try {
                     const parsed = JSON.parse(bodyBuffer.toString('utf8'));
                     if (isSuggestionModeRequest(parsed)) suggestionPayload = parsed;
@@ -434,15 +483,32 @@ export function createProxyServer({
                     // Not JSON — normal forwarding path.
                 }
                 if (suggestionPayload) {
+                    const firstBase = (targetOrder.allowed?.[0] ?? targetOrder.ordered[0])?.base
+                        ?? primaryBase;
+                    if (!resolveSuggestionForward(firstBase)) {
+                        handleSuggestionIntercept(res, suggestionPayload);
+                        return;
+                    }
+                }
+            }
+
+            // targets 列表：排序结果 + probe 副作用（详见 orderTargets /
+            // finalizeTargets）。拦截路径已在上面提前返回，不消耗 half-open 名额。
+            let targets = finalizeTargets(targetOrder);
+            // 复核：拦截预判依据的是「探测前候选」，而 probe 被并发占用时
+            // finalizeTargets 会回退到下一个候选上游服务本请求。此时策略须按
+            // 真实服务上游重判，否则 baseUrls 中对备用上游的 forward:false 会
+            // 被绕过而实际转发计费（反向则误拦截）。probe() 拒绝对本请求未占用
+            // 探测名额，直接返回不会泄漏；另在 allowed 为 null（单上游 / 无
+            // breaker / 全 open 兜底）时条件亦成立，但两侧 base 相同、重解析
+            // 结果不变，仅多一次匹配开销。
+            if (suggestionPayload && targets[0] !== targetOrder.allowed?.[0]) {
+                const actualBase = targets[0]?.base ?? primaryBase;
+                if (!resolveSuggestionForward(actualBase)) {
                     handleSuggestionIntercept(res, suggestionPayload);
                     return;
                 }
             }
-
-            // targets 列表：经 breaker 过滤与健康分排序后的有序上游
-            // （首项为首选上游，详见 buildTargets）。置于拦截判定之后：
-            // 被拦截的请求不触达上游，不应消耗 half-open 探测名额。
-            let targets = buildTargets(req, target);
             // 定向 Effort 覆写：为每个候选上游预置请求体（按该上游生效档位）。
             // 转发层按 entry 取用，failover 后新上游收到与其 base 匹配的体。
             // 未启用 / 非 JSON（parsedBody 为 null）时不附加字段（零开销），

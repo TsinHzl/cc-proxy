@@ -81,7 +81,7 @@ function menuText(config, configPath) {
         '=============================',
         `配置文件: ${configPath}`,
         '',
-        `[1] Suggestion Mode 输入建议转发: ${config.forwardSuggestionMode ? '开(当前状态)' : '关(当前状态)'}`,
+        `[1] Suggestion Mode 输入建议转发: ${config.forwardSuggestionMode.enabled ? '开(当前状态)' : '关(当前状态)'}`,
         '',
         '按 1 切换 Suggestion Mode 开关（即时写盘）',
         '回车/Esc 退出'
@@ -109,8 +109,13 @@ export async function runSettingsMenu(deps) {
 
         if (key === '1') {
             // 切换开关并即时写盘，确认新状态后退出。
-            config = deps.write({ forwardSuggestionMode: !config.forwardSuggestionMode });
-            const state = config.forwardSuggestionMode ? '开（转发上游，可能产生额外计费）' : '关（拦截建议请求，返回空响应）';
+            // 只翻 enabled，保留 CLI 不展示但已配置的定向列表。
+            config = deps.write({
+                forwardSuggestionMode: { enabled: !config.forwardSuggestionMode.enabled }
+            });
+            const state = config.forwardSuggestionMode.enabled
+                ? '开（转发上游，可能产生额外计费）'
+                : '关（拦截建议请求，返回空响应）';
             write(`\n设置已保存：Suggestion Mode 输入建议转发 → ${state}\n已退出。\n`);
             return config;
         }

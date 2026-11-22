@@ -146,7 +146,7 @@ Switches (written to `~/.cc-proxy/config.json` immediately and atomically; they 
 effect on the next proxy session; the initial `/api/settings` read drives the controls,
 and a save failure rolls back to the last server-authoritative state):
 
-- `Suggestion Mode 输入建议转发` — off by default; when on, suggestion requests are forwarded upstream (extra token cost).
+- `Suggestion Mode 输入建议转发` — off by default; when on, suggestion requests are forwarded upstream (extra token cost). Supports a target-upstream list where each entry can override to "force forward / force intercept"; unmatched entries follow the global switch.
 - `思考内容文本化展示` — on by default; turn it off to restore Claude Code's native collapsed Thinking block.
 - `Effort 覆写` — on by default (`high`); every request is forwarded at the selected level, and the target-upstream list lets each entry carry its own level.
 - `系统提示词覆写` — off by default; replaces the `system` field of every request with the text in the box.
@@ -341,9 +341,34 @@ immediately; if the save fails the page reverts to its previous state and shows 
 error while the settings service stays available.
 
 When enabled, suggestion requests are forwarded upstream
-(Claude Code shows input suggestions, at extra cost). The switch persists as
-`forwardSuggestionMode` in `~/.cc-proxy/config.json`. The change takes effect on
-the **next session start** (the running proxy reads the config once at startup).
+(Claude Code shows input suggestions, at extra cost). Settings persist as
+`forwardSuggestionMode` in `~/.cc-proxy/config.json`:
+
+```json
+{
+  "forwardSuggestionMode": {
+    "enabled": false,
+    "baseUrls": [
+      "https://inherit.example.com",
+      { "url": "https://cheap.example.com", "forward": true, "label": "cheap upstream" },
+      { "url": "https://costly.example.com", "forward": false }
+    ]
+  }
+}
+```
+
+`baseUrls` is an optional target list (empty = apply `enabled` to every upstream):
+a string entry inherits the global switch, while an object entry with
+`forward: true` forces forwarding and `forward: false` forces interception —
+i.e. it can override the global switch in either direction. The decision uses the
+full base URL of the upstream **actually selected** for this request (including
+the first candidate after failover); when several entries match, the more specific
+one (longer path) wins. The legacy boolean form (`"forwardSuggestionMode": true`)
+is migrated automatically to `{ enabled: true, baseUrls: [] }`.
+
+The change takes effect on the **next session start** (the running proxy reads the
+config once at startup). Intercepted suggestion requests never reach an upstream
+and never consume a breaker half-open probe slot.
 
 ### Usage tracking
 
@@ -487,7 +512,7 @@ npm test        # node:test unit + end-to-end tests (full suite)
 | `bin/claude-proxy.js` | CLI entry: --version / --setting / start proxy → inject env → spawn claude; exit summary and runtime snapshot flush |
 | `bin/settings-web.js` | `--setting` local web page, protected API (settings / usage / upstream health / recent requests / export) and browser launch |
 | `bin/settings-page.js` | Settings page HTML: template + inline script + styles, bootstrap nonce injection |
-| `bin/settings-page-targetlist.js` | Target-upstream list factory (shared by usageScale / effortOverride, per-row level select) |
+| `bin/settings-page-targetlist.js` | Target-upstream list factory (shared by usageScale / effortOverride / forwardSuggestionMode; per-row level, ratio and forward-policy select, plus label input) |
 | `bin/settings-page-usage.js` | Usage dashboard script fragment (range tabs, export, alert dot, storage-mode badge) |
 | `bin/settings-page-health.js` | Upstream status board script fragment (success rate / TTFT / breaker badge / failover list) |
 | `bin/settings-page-recent-requests.js` | Recent requests table script fragment (with redacted-header detail expansion) |
@@ -498,7 +523,7 @@ npm test        # node:test unit + end-to-end tests (full suite)
 | `src/upstream.js` | Upstream URL resolution and request forwarding |
 | `src/upstream-breaker.js` | Upstream circuit breaker (3 consecutive failures → open → 30s cooldown → half-open probe recovery), used by routing and the settings-page badge |
 | `src/upstream-health.js` | Upstream health stats (rolling success rate / TTFT samples / failover events) → `runtime/upstream-health.json` |
-| `src/base-url-match.js` | Targeting primitives (base URL normalization + hit test, shared by usageScale / effortOverride) |
+| `src/base-url-match.js` | Targeting primitives (base URL normalization + hit test, shared by usageScale / effortOverride / forwardSuggestionMode) |
 | `src/request-log.js` | Recent-request ring buffer (200 entries, redacted headers, no bodies) → `runtime/recent-requests.json` |
 | `src/settings.js` | Config read/write (`~/.cc-proxy/config.json`), missing/corrupt falls back to defaults |
 | `src/suggestion-mode.js` | Suggestion request detection and empty-response building (streaming/non-streaming) |

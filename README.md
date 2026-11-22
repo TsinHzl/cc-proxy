@@ -132,7 +132,7 @@ cc-proxy --setting
 
 启动仅监听 `127.0.0.1` 的临时 Web 设置服务，并自动打开默认浏览器。页面包含五个开关与三个只读看板：
 
-- `Suggestion Mode 输入建议转发`：默认关闭；开启后把输入建议请求转发上游并额外消耗 token。
+- `Suggestion Mode 输入建议转发`：默认关闭；开启后把输入建议请求转发上游并额外消耗 token。可配置目标上游列表，每个目标上游可覆盖为「强制转发 / 强制拦截」，未命中条目按全局开关。
 - `思考内容文本化展示`：默认开启；关闭后恢复 Claude Code 原生折叠 Thinking 块。
 - `Effort 覆写`：默认开启（high）；开启后所有请求均以所选档位转发，可配置目标上游列表仅对特定上游生效，且每个目标上游可各配自己的档位（详见下方小节）。
 - `系统提示词覆写`：默认关闭；开启后所有请求的 system 提示词被替换为输入框内容。
@@ -231,7 +231,24 @@ Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建
 
 在 Web 设置页切换转发开关后会立即写盘；保存失败时页面恢复原状态并显示错误，设置服务保持可用。
 
-开启后建议请求正常转发上游（Claude Code 会展示输入建议，但会产生额外计费）。开关持久化于 `~/.cc-proxy/config.json` 的 `forwardSuggestionMode` 字段，**切换后对下次启动的会话生效**（已运行的代理在启动时读取一次配置）。
+开启后建议请求正常转发上游（Claude Code 会展示输入建议，但会产生额外计费）。配置持久化于 `~/.cc-proxy/config.json` 的 `forwardSuggestionMode` 字段：
+
+```json
+{
+  "forwardSuggestionMode": {
+    "enabled": false,
+    "baseUrls": [
+      "https://inherit.example.com",
+      { "url": "https://cheap.example.com", "forward": true, "label": "便宜上游" },
+      { "url": "https://costly.example.com", "forward": false }
+    ]
+  }
+}
+```
+
+`baseUrls` 为定向列表（留空 = 全部按 `enabled`）：字符串条目继承全局开关；对象条目 `forward: true` 强制转发、`forward: false` 强制拦截，可对全局开关做反向覆盖。判定依据是本次请求**实际选中**的上游完整 base URL（含故障转移后的首个候选），多条命中时路径更长（更具体）的条目生效。旧版布尔字段（`"forwardSuggestionMode": true`）自动迁移为 `{ enabled: true, baseUrls: [] }`。
+
+**切换后对下次启动的会话生效**（已运行的代理在启动时读取一次配置）。被拦截的建议请求不触达上游，也不占用熔断器的半开探测名额。
 
 ### 用量统计
 
@@ -320,7 +337,7 @@ npm test        # node:test 单元 + 端到端测试（全量）
 | `bin/claude-proxy.js` | CLI 入口：--version / --setting / 起代理 → 注入 env → spawn claude；退出汇总与运行时快照 flush |
 | `bin/settings-web.js` | `--setting` 本地 Web 页面、受保护 API（设置读写 / 用量 / 上游状态 / 最近请求 / 导出）与浏览器启动 |
 | `bin/settings-page.js` | 设置页 HTML：模板 + 内联脚本 + 样式，bootstrap nonce 注入 |
-| `bin/settings-page-targetlist.js` | 定向目标上游列表工厂（usageScale / effortOverride 共用，含每行档位下拉） |
+| `bin/settings-page-targetlist.js` | 定向目标上游列表工厂（usageScale / effortOverride / forwardSuggestionMode 共用，含每行档位、比例、转发策略下拉与备注输入） |
 | `bin/settings-page-usage.js` | 用量看板脚本片段（Tab 切换、导出、告警红点、存储模式徽标） |
 | `bin/settings-page-health.js` | 上游状态看板脚本片段（成功率 / TTFT / 熔断徽标 / 故障转移列表） |
 | `bin/settings-page-recent-requests.js` | 最近请求表脚本片段（含脱敏头详情展开） |
@@ -331,7 +348,7 @@ npm test        # node:test 单元 + 端到端测试（全量）
 | `src/upstream.js` | 上游地址解析与请求转发 |
 | `src/upstream-breaker.js` | 上游熔断器（连续失败≥3 → open → 30s 冷却 → half-open 探测恢复），供选路过滤与设置页徽标 |
 | `src/upstream-health.js` | 上游健康统计（滚动成功率 / TTFT 样本 / 故障转移事件）→ `runtime/upstream-health.json` |
-| `src/base-url-match.js` | 定向匹配原语（base URL 规范化 + 命中判定，usageScale / effortOverride 共用） |
+| `src/base-url-match.js` | 定向匹配原语（base URL 规范化 + 命中判定，usageScale / effortOverride / forwardSuggestionMode 共用） |
 | `src/request-log.js` | 最近请求环形缓冲 200 条（头脱敏、不含 body）→ `runtime/recent-requests.json` |
 | `src/settings.js` | 配置读写（`~/.cc-proxy/config.json`），缺失/损坏回退默认值 |
 | `src/suggestion-mode.js` | 建议请求识别与空响应构建（流式/非流式） |

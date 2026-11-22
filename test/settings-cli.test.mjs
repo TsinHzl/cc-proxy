@@ -31,7 +31,7 @@ async function driveMenu(t, dir, keys) {
 test('settings menu: shows config path and exits without changes (esc)', async (t) => {
     const dir = tmpDir(t);
     const { config, output } = await driveMenu(t, dir, ['esc']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true, effortOverride: { enabled: true, level: 'high', baseUrls: [] }, systemPromptOverride: { enabled: false, prompt: '' }, usageScale: { enabled: false, ratio: 1, baseUrls: [] }, alerts: { dailyTokens: 0, dailyCost: 0 }, usageAlert: { warnThreshold: 0.8, limitThreshold: 1 }, models: {}, upstreams: [] });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true, effortOverride: { enabled: true, level: 'high', baseUrls: [] }, systemPromptOverride: { enabled: false, prompt: '' }, usageScale: { enabled: false, ratio: 1, baseUrls: [] }, alerts: { dailyTokens: 0, dailyCost: 0 }, usageAlert: { warnThreshold: 0.8, limitThreshold: 1 }, models: {}, upstreams: [] });
     assert.match(output, /配置文件: .*config\.json/);
     assert.match(output, /已退出/);
 });
@@ -39,7 +39,7 @@ test('settings menu: shows config path and exits without changes (esc)', async (
 test('settings menu: enter also exits without changes', async (t) => {
     const dir = tmpDir(t);
     const { config } = await driveMenu(t, dir, ['enter']);
-    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: false, thinkingAsText: true, effortOverride: { enabled: true, level: 'high', baseUrls: [] }, systemPromptOverride: { enabled: false, prompt: '' }, usageScale: { enabled: false, ratio: 1, baseUrls: [] }, alerts: { dailyTokens: 0, dailyCost: 0 }, usageAlert: { warnThreshold: 0.8, limitThreshold: 1 }, models: {}, upstreams: [] });
+    assert.deepEqual(config, { thinkingWindow: { enabled: false, lines: 10 }, forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true, effortOverride: { enabled: true, level: 'high', baseUrls: [] }, systemPromptOverride: { enabled: false, prompt: '' }, usageScale: { enabled: false, ratio: 1, baseUrls: [] }, alerts: { dailyTokens: 0, dailyCost: 0 }, usageAlert: { warnThreshold: 0.8, limitThreshold: 1 }, models: {}, upstreams: [] });
     assert.equal(fs.existsSync(path.join(dir, 'config.json')), false, 'no config written');
 });
 
@@ -47,17 +47,17 @@ test('settings menu: key 1 toggles forwardSuggestionMode, confirms state, and ex
     const dir = tmpDir(t);
     // 1 → 切到开并提示后自动退出；落盘为开启态。
     const { config, output } = await driveMenu(t, dir, ['1']);
-    assert.equal(config.forwardSuggestionMode, true);
+    assert.equal(config.forwardSuggestionMode.enabled, true);
     assert.match(output, /设置已保存：Suggestion Mode 输入建议转发 → 开/);
     assert.match(output, /已退出/);
-    assert.equal(readConfig(dir).forwardSuggestionMode, true);
+    assert.equal(readConfig(dir).forwardSuggestionMode.enabled, true);
 });
 
 test('settings menu: key 1 toggles off state confirmation when starting from on', async (t) => {
     const dir = tmpDir(t);
     writeConfig({ forwardSuggestionMode: true }, dir);
     const { config, output } = await driveMenu(t, dir, ['1']);
-    assert.equal(config.forwardSuggestionMode, false);
+    assert.equal(config.forwardSuggestionMode.enabled, false);
     assert.match(output, /设置已保存：Suggestion Mode 输入建议转发 → 关/);
-    assert.equal(readConfig(dir).forwardSuggestionMode, false);
+    assert.equal(readConfig(dir).forwardSuggestionMode.enabled, false);
 });

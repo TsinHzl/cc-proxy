@@ -8,9 +8,12 @@ import { normalizeBaseUrl } from './base-url-match.js';
 
 export const DEFAULT_CONFIG = Object.freeze({
     thinkingWindow: { enabled: false, lines: 10 },
-    // Suggestion Mode 放行开关：false（默认）拦截 CC 输入建议请求并返回空响应，
-    // true 时正常转发上游（展示输入建议，产生额外计费）。
-    forwardSuggestionMode: false,
+    // Suggestion Mode 转发策略：enabled 为全局开关（false（默认）拦截 CC 输入建议
+    // 请求并返回空响应，true 时正常转发上游，产生额外计费）；baseUrls 为定向列表
+    // （默认 [] = 全量按全局开关）：条目为字符串（继承全局）或
+    // { url, forward?, label? }，forward=true 强制转发、false 强制拦截（对全局
+    // 开关做反向覆盖）。
+    forwardSuggestionMode: { enabled: false, baseUrls: [] },
     // 默认保持现有 thinking → text 展示；false 时恢复 CC 原生 thinking 块。
     thinkingAsText: true,
     // Effort 覆写：开启时统一将 CC 请求体中的 effort 档位改写为 level，
@@ -154,17 +157,46 @@ function cleanEffortTargets(input) {
     return clean;
 }
 
-// 行数非法（非整数、<1 或 >100）回退默认 10；enabled / forwardSuggestionMode
-// 非布尔回退 false（默认拦截建议请求）；effortOverride.enabled 非布尔回退 true，
+// forwardSuggestionMode.baseUrls 逐项校验，条目为混合形态（与 cleanEffortTargets
+// 同构，值键为布尔 forward）：
+// - 字符串且 URL 合法 → 保留字符串（语义：继承全局开关、无备注）
+// - 对象且 url 合法 → forward 为布尔时保留，label 合法时保留 label；两者都
+//   缺失 / 非法则归一为纯字符串（「未指定策略且无备注」只有字符串一种存储表达）
+// - 其余（非字符串非对象、url 非法）逐项丢弃；非数组归一为空列表
+// - 去重：以 normalizeBaseUrl 规范串判重，保留首次出现的形态与值
+function cleanSuggestionTargets(input) {
+    if (!Array.isArray(input)) return [];
+    const seen = new Set();
+    const clean = [];
+    for (const entry of input) {
+        const isObject = entry !== null && typeof entry === 'object' && !Array.isArray(entry);
+        const url = cleanBaseUrl(isObject ? entry.url : entry);
+        if (url === null) continue;
+        const key = normalizeBaseUrl(url);
+        if (key === null || seen.has(key)) continue;
+        seen.add(key);
+        const extra = {};
+        if (isObject && typeof entry.forward === 'boolean') extra.forward = entry.forward;
+        const label = isObject ? cleanTargetLabel(entry.label) : null;
+        if (label !== null) extra.label = label;
+        clean.push(Object.keys(extra).length ? { url, ...extra } : url);
+    }
+    return clean;
+}
+
+// 行数非法（非整数、<1 或 >100）回退默认 10；thinkingWindow.enabled 非布尔回退
+// false；forwardSuggestionMode 兼容旧布尔（仅映射 enabled）
+// 与对象形态（enabled 非布尔回退 false，baseUrls 走 cleanSuggestionTargets），
+// effortOverride.enabled 非布尔回退 true，
 // level 非枚举回退 'high'（出厂默认语义，方向与 thinkingWindow 相反）；
 // effortOverride.baseUrls 走 cleanEffortTargets（混合形态 + 规范串去重），
-// usageScale.baseUrls 走 cleanScaleTargets（混合形态 + 规范串去重），两者非法项均丢弃；
+// usageScale.baseUrls 走 cleanScaleTargets（混合形态 + 规范串去重），三者非法项均丢弃；
 // 条目的 label（备注）非字符串 / 空 / 超长时仅丢弃该字段，不丢 URL 条目；
 // systemPromptOverride.enabled 非布尔回退 false，prompt 非字符串或超 256KB 回退 ''。
 function normalizeConfig(raw) {
     const config = {
         thinkingWindow: { ...DEFAULT_CONFIG.thinkingWindow },
-        forwardSuggestionMode: DEFAULT_CONFIG.forwardSuggestionMode,
+        forwardSuggestionMode: { ...DEFAULT_CONFIG.forwardSuggestionMode },
         thinkingAsText: DEFAULT_CONFIG.thinkingAsText,
         effortOverride: { ...DEFAULT_CONFIG.effortOverride },
         systemPromptOverride: { ...DEFAULT_CONFIG.systemPromptOverride },
@@ -206,8 +238,13 @@ function normalizeConfig(raw) {
         // 定向列表：纯字符串形态（唯一形态，不携带比例），逐项校验。
         config.usageScale.baseUrls = cleanScaleTargets(us.baseUrls);
     }
-    if (typeof raw.forwardSuggestionMode === 'boolean') {
-        config.forwardSuggestionMode = raw.forwardSuggestionMode;
+    const fsm = raw.forwardSuggestionMode;
+    if (typeof fsm === 'boolean') {
+        // 旧格式迁移：布尔仅映射 enabled，列表为空（语义与旧版完全一致）。
+        config.forwardSuggestionMode.enabled = fsm;
+    } else if (fsm && typeof fsm === 'object' && !Array.isArray(fsm)) {
+        if (typeof fsm.enabled === 'boolean') config.forwardSuggestionMode.enabled = fsm.enabled;
+        config.forwardSuggestionMode.baseUrls = cleanSuggestionTargets(fsm.baseUrls);
     }
     if (typeof raw.thinkingAsText === 'boolean') {
         config.thinkingAsText = raw.thinkingAsText;
@@ -319,8 +356,13 @@ export function writeConfig(partial, envDir) {
                 : current.usageScale,
         forwardSuggestionMode:
             typeof partial?.forwardSuggestionMode === 'boolean'
-                ? partial.forwardSuggestionMode
-                : current.forwardSuggestionMode,
+                // 旧式布尔 partial：仅改 enabled，保留已配置的定向列表。
+                ? { ...current.forwardSuggestionMode, enabled: partial.forwardSuggestionMode }
+                : partial?.forwardSuggestionMode
+                    && typeof partial.forwardSuggestionMode === 'object'
+                    && !Array.isArray(partial.forwardSuggestionMode)
+                    ? { ...current.forwardSuggestionMode, ...partial.forwardSuggestionMode }
+                    : current.forwardSuggestionMode,
         thinkingAsText:
             typeof partial?.thinkingAsText === 'boolean'
                 ? partial.thinkingAsText

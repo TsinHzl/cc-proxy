@@ -31,13 +31,16 @@ test('page: renders dark settings page with exactly five switches', () => {
     assert.match(html, /id="systemPromptOverridePrompt"/);
     assert.match(html, /id="usageScaleEnabled"/);
     assert.match(html, /id="usageScaleRatio"/);
-    // 定向目标上游列表：两个特性各一套（key 前缀区分）。
+    // 定向目标上游列表：三个特性各一套（key 前缀区分）。
     assert.match(html, /id="scaleTargetList"/);
     assert.match(html, /id="scaleTargetAdd"/);
     assert.match(html, /id="effortTargetList"/);
     assert.match(html, /id="effortTargetAdd"/);
+    assert.match(html, /id="suggestionTargetList"/);
+    assert.match(html, /id="suggestionTargetAdd"/);
     assert.match(html, /留空 = 对所有上游缩放/);
     assert.match(html, /留空 = 对所有上游覆写/);
+    assert.match(html, /留空 = 按上方全局开关/);
     // Effort 列表额外说明：档位继承语义与多条命中的仲裁规则。
     assert.match(html, /继承全局/);
     assert.match(html, /路径更长（更具体）的条目录生效/);
@@ -119,7 +122,7 @@ test('API: GET /api/recent-requests returns snapshot, empty fallback and 405', a
     t.after(() => { os.homedir = realHomedir; });
 
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run')
     });
     t.after(api.close);
@@ -360,6 +363,12 @@ function createPageHarness(fetchHandler) {
                 html.match(/<button[^>]+id="effortTargetAdd"[^>]*>/i)?.[0] ?? ''
             )
         }),
+        suggestionTargetList: createListElement(),
+        suggestionTargetAdd: createPageElement({
+            disabled: /\bdisabled\b/i.test(
+                html.match(/<button[^>]+id="suggestionTargetAdd"[^>]*>/i)?.[0] ?? ''
+            )
+        }),
         status: createPageElement(),
         usageBoard: createPageElement(),
         healthBoard: createPageElement(),
@@ -501,7 +510,7 @@ test('page script: waits for bootstrap and initial load before enabling switches
     settings.resolve(pageJsonResponse(200, {
         ok: true,
         data: {
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' }
         }
@@ -539,7 +548,7 @@ test('page script: applySettings backfill syncs template select display', async 
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: true, prompt: writer.text }
@@ -564,7 +573,7 @@ test('page script: template select resets to CC官方 on input and applySettings
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -615,7 +624,7 @@ test('page script: PATCH uses authoritative data and failed save can retry', asy
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' }
             }
@@ -631,7 +640,7 @@ test('page script: PATCH uses authoritative data and failed save can retry', asy
     patchResponses[0].resolve(pageJsonResponse(200, {
         ok: true,
         data: {
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: false,
             effortOverride: { enabled: true, level: 'high' }
         }
@@ -656,7 +665,7 @@ test('page script: PATCH uses authoritative data and failed save can retry', asy
     patchResponses[2].resolve(pageJsonResponse(200, {
         ok: true,
         data: {
-            forwardSuggestionMode: true,
+            forwardSuggestionMode: { enabled: true, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: false, level: 'low' }
         }
@@ -743,7 +752,7 @@ test('page script: session failure or disconnect keeps switches disabled', async
         settings.resolve(pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' }
             }
@@ -770,7 +779,7 @@ test('page script: session failure or disconnect keeps switches disabled', async
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' }
                 }
@@ -802,7 +811,7 @@ test('page script: session failure or disconnect keeps switches disabled', async
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' }
                 }
@@ -844,7 +853,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -879,7 +888,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -907,7 +916,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -942,7 +951,7 @@ test('page script: prefills captured prompt on load when textarea is empty', asy
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -974,7 +983,7 @@ test('page script: scale target list renders, adds, removes and submits baseUrls
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high' },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -989,7 +998,7 @@ test('page script: scale target list renders, adds, removes and submits baseUrls
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -1050,7 +1059,7 @@ test('page script: invalid scale target URL blocks submit and rolls back', async
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -1099,7 +1108,7 @@ test('page script: effort target list renders, adds, removes and submits baseUrl
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: {
                         enabled: true, level: 'high', baseUrls: body.value
@@ -1112,7 +1121,7 @@ test('page script: effort target list renders, adds, removes and submits baseUrl
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: {
                     enabled: true, level: 'high',
@@ -1173,7 +1182,7 @@ test('page script: invalid effort target URL blocks submit and rolls back', asyn
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: {
                     enabled: true, level: 'high', baseUrls: ['https://a.com']
@@ -1212,7 +1221,7 @@ test('page script: effort target row renders level select, object entries presel
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: {
                     enabled: true, level: 'high',
@@ -1260,7 +1269,7 @@ test('page script: effort level change submits object form; empty submits string
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: {
                         enabled: true, level: 'high', baseUrls: body.value
@@ -1273,7 +1282,7 @@ test('page script: effort level change submits object form; empty submits string
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: {
                     enabled: true, level: 'high',
@@ -1321,7 +1330,7 @@ test('page script: effort target label input renders and round-trips through sub
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: {
                         enabled: true, level: 'high', baseUrls: body.value
@@ -1334,7 +1343,7 @@ test('page script: effort target label input renders and round-trips through sub
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: {
                     enabled: true, level: 'high',
@@ -1378,6 +1387,145 @@ test('page script: effort target label input renders and round-trips through sub
     assert.deepEqual(patched[1].value, ['https://a.com', { url: 'https://b.com', label: 'BigModel' }]);
 });
 
+test('page script: suggestion target list renders mixed entries and submits forward tri-state', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            const body = JSON.parse(options.body);
+            patched.push(body);
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: { enabled: false, baseUrls: body.value },
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: {
+                    enabled: false,
+                    // 首项为纯字符串（继承全局），次项为强制转发的对象条目，
+                    // 第三项为强制拦截。
+                    baseUrls: [
+                        'https://a.com',
+                        { url: 'https://b.com', forward: true, label: '便宜上游' },
+                        { url: 'https://c.com', forward: false }
+                    ]
+                },
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    const rows = page.elements.suggestionTargetList.children;
+    // 行元素 [URL, 策略下拉, 备注, 删除]：该列表无比例 / 档位控件。
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].options.length, 4);
+    assert.equal(rows[0].options[1].className, 'target-level');
+    // 字符串条目 → 继承全局（空值）。
+    assert.equal(rows[0].options[1].value, '');
+    assert.equal(rows[1].options[1].value, 'true');
+    assert.equal(rows[1].options[2].value, '便宜上游');
+    assert.equal(rows[2].options[1].value, 'false');
+
+    // 首行选择「强制转发」：字符串条目升级为对象，且不写 label。
+    rows[0].options[1].value = 'true';
+    await rows[0].options[1].dispatch('change');
+    await flushPageMicrotasks();
+    assert.equal(patched.length, 1);
+    assert.equal(patched[0].key, 'forwardSuggestionMode.baseUrls');
+    assert.deepEqual(patched[0].value, [
+        { url: 'https://a.com', forward: true },
+        { url: 'https://b.com', forward: true, label: '便宜上游' },
+        { url: 'https://c.com', forward: false }
+    ]);
+
+    // 回退为「继承全局」且无备注：退回纯字符串形态。
+    // 保存成功后列表按权威快照重建，须重新取行元素（旧引用已从 DOM 摘除）。
+    const rebuiltRows = page.elements.suggestionTargetList.children;
+    rebuiltRows[0].options[1].value = '';
+    await rebuiltRows[0].options[1].dispatch('change');
+    await flushPageMicrotasks();
+    assert.deepEqual(patched[1].value, [
+        'https://a.com',
+        { url: 'https://b.com', forward: true, label: '便宜上游' },
+        { url: 'https://c.com', forward: false }
+    ]);
+});
+
+test('page script: suggestion target list adds and removes rows', async (t) => {
+    const patched = [];
+    const page = createPageHarness(({ url, options }) => {
+        if (url === '/api/bootstrap') {
+            return pageJsonResponse(200, { ok: true, data: { token: 'vm-token' } });
+        }
+        if (url === '/api/captured-system-prompt') {
+            return pageJsonResponse(200, { ok: true, data: { prompt: null } });
+        }
+        if (url === '/api/session') return pageSessionResponse();
+        if (options.method === 'PATCH') {
+            const body = JSON.parse(options.body);
+            patched.push(body);
+            return pageJsonResponse(200, {
+                ok: true,
+                data: {
+                    forwardSuggestionMode: { enabled: true, baseUrls: body.value },
+                    thinkingAsText: true,
+                    effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                    systemPromptOverride: { enabled: false, prompt: '' },
+                    usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+                }
+            });
+        }
+        return pageJsonResponse(200, {
+            ok: true,
+            data: {
+                forwardSuggestionMode: { enabled: true, baseUrls: ['https://a.com'] },
+                thinkingAsText: true,
+                effortOverride: { enabled: true, level: 'high', baseUrls: [] },
+                systemPromptOverride: { enabled: false, prompt: '' },
+                usageScale: { enabled: false, ratio: 1, baseUrls: [] }
+            }
+        });
+    });
+    await flushPageMicrotasks();
+
+    assert.equal(page.elements.suggestionTargetList.children.length, 1);
+    assert.equal(page.elements.suggestionTargetAdd.disabled, false);
+
+    await page.elements.suggestionTargetAdd.dispatch('pointerdown');
+    await page.elements.suggestionTargetAdd.dispatch('click');
+    assert.equal(page.elements.suggestionTargetList.children.length, 2);
+    const newInput = page.elements.suggestionTargetList.children[1].options[0];
+    newInput.value = 'https://d.com';
+    await newInput.dispatch('blur');
+    await flushPageMicrotasks();
+    assert.equal(patched[0].key, 'forwardSuggestionMode.baseUrls');
+    assert.deepEqual(patched[0].value, ['https://a.com', 'https://d.com']);
+
+    const firstRemove = page.elements.suggestionTargetList.children[0].options[3];
+    await firstRemove.dispatch('pointerdown');
+    await firstRemove.dispatch('click');
+    await flushPageMicrotasks();
+    assert.deepEqual(patched[1].value, ['https://d.com']);
+});
+
 test('page script: scale target label input coexists with ratio', async (t) => {
     const patched = [];
     const page = createPageHarness(({ url, options }) => {
@@ -1394,7 +1542,7 @@ test('page script: scale target label input coexists with ratio', async (t) => {
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: true, level: 'high', baseUrls: [] },
                     systemPromptOverride: { enabled: false, prompt: '' },
@@ -1405,7 +1553,7 @@ test('page script: scale target label input coexists with ratio', async (t) => {
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high', baseUrls: [] },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -1445,7 +1593,7 @@ test('page script: usageScale target rows have no level select', async (t) => {
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high', baseUrls: [] },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -1599,11 +1747,11 @@ function createBodyHandler({
     timers,
     bodyTimeoutMs = 37,
     read = () => ({
-        forwardSuggestionMode: false,
+        forwardSuggestionMode: { enabled: false, baseUrls: [] },
         thinkingAsText: true
     }),
     write = () => ({
-        forwardSuggestionMode: false,
+        forwardSuggestionMode: { enabled: false, baseUrls: [] },
         thinkingAsText: false
     })
 } = {}) {
@@ -1937,7 +2085,7 @@ test(
         });
         assert.equal(initial.status, 200);
         assert.deepEqual((await initial.json()).data, {
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high', baseUrls: [] },
             systemPromptOverride: { enabled: false, prompt: '' },
@@ -1952,13 +2100,13 @@ test(
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                key: 'forwardSuggestionMode',
+                key: 'forwardSuggestionMode.enabled',
                 value: true
             })
         });
         assert.equal(updated.status, 200);
         assert.deepEqual((await updated.json()).data, {
-            forwardSuggestionMode: true,
+            forwardSuggestionMode: { enabled: true, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high', baseUrls: [] },
             systemPromptOverride: { enabled: false, prompt: '' },
@@ -1970,7 +2118,7 @@ test(
             JSON.parse(fs.readFileSync(configFile, 'utf8')),
             {
                 thinkingWindow: { enabled: false, lines: 10 },
-                forwardSuggestionMode: true,
+                forwardSuggestionMode: { enabled: true, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high', baseUrls: [] },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -2038,7 +2186,7 @@ test(
 test('bootstrap: nonce is per-page, wrong Origin does not consume it, and replay is rejected', async (t) => {
     let nonceSequence = 0;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run'),
         createBootstrapNonce: () => `bootstrap-${nonceSequence += 1}`
     });
@@ -2075,7 +2223,7 @@ test('bootstrap: nonce expires exactly at its TTL boundary', async (t) => {
     let currentTime = 0;
     let nonceSequence = 0;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run'),
         createBootstrapNonce: () => `ttl-${nonceSequence += 1}`,
         bootstrapNonceTtlMs: 30_000,
@@ -2105,7 +2253,7 @@ test('bootstrap: nonce expires exactly at its TTL boundary', async (t) => {
 test('bootstrap: pending nonce capacity evicts the oldest entry', async (t) => {
     let nonceSequence = 0;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run'),
         createBootstrapNonce: () => `capacity-${nonceSequence += 1}`,
         maxBootstrapNonces: 2
@@ -2140,7 +2288,7 @@ test('API: reads only public settings with valid token', async (t) => {
     const api = await startApi({
         read: () => ({
             thinkingWindow: { enabled: false, lines: 10 },
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true
         }),
         write: () => assert.fail('write should not run')
@@ -2151,7 +2299,7 @@ test('API: reads only public settings with valid token', async (t) => {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
         ok: true,
-        data: { forwardSuggestionMode: false, thinkingAsText: true }
+        data: { forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }
     });
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
@@ -2161,10 +2309,10 @@ test('API: reads only public settings with valid token', async (t) => {
 test('API: PATCH writes one boolean setting', async (t) => {
     let update = null;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: (partial) => {
             update = partial;
-            return { forwardSuggestionMode: true, thinkingAsText: true };
+            return { forwardSuggestionMode: { enabled: true, baseUrls: [] }, thinkingAsText: true };
         }
     });
     t.after(api.close);
@@ -2175,13 +2323,14 @@ test('API: PATCH writes one boolean setting', async (t) => {
             Origin: api.origin,
             'Content-Type': 'application/json'
         }),
-        body: JSON.stringify({ key: 'forwardSuggestionMode', value: true })
+        body: JSON.stringify({ key: 'forwardSuggestionMode.enabled', value: true })
     });
     assert.equal(response.status, 200);
-    assert.deepEqual(update, { forwardSuggestionMode: true });
+    // 点号 key 展开为嵌套 partial，writeConfig 逐字段合并保留 baseUrls。
+    assert.deepEqual(update, { forwardSuggestionMode: { enabled: true } });
     assert.deepEqual(await response.json(), {
         ok: true,
-        data: { forwardSuggestionMode: true, thinkingAsText: true }
+        data: { forwardSuggestionMode: { enabled: true, baseUrls: [] }, thinkingAsText: true }
     });
 });
 
@@ -2189,14 +2338,14 @@ test('API: PATCH effortOverride.enabled merges nested partial', async (t) => {
     let update = null;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' }
         }),
         write: (partial) => {
             update = partial;
             return {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: false, level: 'high' }
             };
@@ -2218,7 +2367,7 @@ test('API: PATCH effortOverride.enabled merges nested partial', async (t) => {
     assert.deepEqual(await response.json(), {
         ok: true,
         data: {
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: false, level: 'high' }
         }
@@ -2229,14 +2378,14 @@ test('API: PATCH effortOverride.level writes level and keeps enabled', async (t)
     let update = null;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: false, level: 'high' }
         }),
         write: (partial) => {
             update = partial;
             return {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: false, level: 'medium' }
             };
@@ -2279,7 +2428,7 @@ test('API: rejects invalid effortOverride patches without writes', async (t) => 
     let writes = 0;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' }
         }),
@@ -2311,7 +2460,7 @@ test('API: PATCH systemPromptOverride writes prompt and enabled', async (t) => {
     let update = null;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             systemPromptOverride: { enabled: false, prompt: '' },
             usageScale: { enabled: false, ratio: 1, baseUrls: [] }
@@ -2319,7 +2468,7 @@ test('API: PATCH systemPromptOverride writes prompt and enabled', async (t) => {
         write: (partial) => {
             update = partial;
             return {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 systemPromptOverride: { enabled: false, prompt: '自定义提示词' }
             };
@@ -2352,7 +2501,7 @@ test('API: rejects invalid systemPromptOverride patches without writes', async (
     let writes = 0;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             systemPromptOverride: { enabled: false, prompt: '' },
             usageScale: { enabled: false, ratio: 1, baseUrls: [] }
@@ -2386,7 +2535,7 @@ test('API: PATCH usageScale writes enabled and ratio, invalid ratio rejected', a
     let writes = 0;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
             systemPromptOverride: { enabled: false, prompt: '' },
@@ -2396,7 +2545,7 @@ test('API: PATCH usageScale writes enabled and ratio, invalid ratio rejected', a
             update = partial;
             writes += 1;
             return {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high' },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -2485,7 +2634,7 @@ test('API: PATCH usageScale.baseUrls invalid array rejected with 400', async (t)
     let writes = 0;
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             effortOverride: { enabled: true, level: 'high' },
             systemPromptOverride: { enabled: false, prompt: '' },
@@ -2623,6 +2772,72 @@ test('API: PATCH effortOverride.baseUrls accepts mixed string / object entries',
     assert.equal(dedupe.status, 200);
     assert.deepEqual(update.effortOverride.baseUrls,
         ['https://a.com', { url: 'https://a.com/', level: 'max' }]);
+});
+
+test('API: PATCH forwardSuggestionMode.baseUrls writes trimmed array, invalid rejected', async (t) => {
+    let update = null;
+    let writes = 0;
+    const api = await startApi({
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] } }),
+        write: (partial) => {
+            update = partial;
+            writes += 1;
+            return {};
+        }
+    });
+    t.after(api.close);
+
+    const valid = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+            key: 'forwardSuggestionMode.baseUrls',
+            value: [
+                ' https://a.com ',
+                { url: ' https://b.com ', forward: true, label: ' 便宜上游 ' },
+                // forward 缺失：对象只保留 url 键（丢弃 undefined 空策略字段）。
+                { url: 'https://c.com' }
+            ]
+        })
+    });
+    assert.equal(valid.status, 200);
+    assert.deepEqual(update, {
+        forwardSuggestionMode: {
+            baseUrls: [
+                'https://a.com',
+                { url: 'https://b.com', forward: true, label: '便宜上游' },
+                { url: 'https://c.com' }
+            ]
+        }
+    });
+
+    // 空数组合法（清空列表 = 全部按全局开关）。
+    const empty = await fetch(`${api.origin}/api/settings`, {
+        method: 'PATCH',
+        headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: [] })
+    });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(update, { forwardSuggestionMode: { baseUrls: [] } });
+
+    const writesBefore = writes;
+    for (const body of [
+        JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: 'https://a.com' }),
+        JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: null }),
+        JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: ['https://a.com', 42] }),
+        JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: ['not a url'] }),
+        JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: ['ftp://a.com'] }),
+        // forward 非布尔：整次 400。
+        JSON.stringify({ key: 'forwardSuggestionMode.baseUrls', value: [{ url: 'https://a.com', forward: 'yes' }] })
+    ]) {
+        const response = await fetch(`${api.origin}/api/settings`, {
+            method: 'PATCH',
+            headers: authHeaders(api, { Origin: api.origin, 'Content-Type': 'application/json' }),
+            body
+        });
+        assert.equal(response.status, 400, body);
+    }
+    assert.equal(writes, writesBefore);
 });
 
 test('API: PATCH effort / usageScale baseUrls accepts and trims label', async (t) => {
@@ -2793,7 +3008,7 @@ test('page script: usageScale target rows have ratio input', async (t) => {
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high', baseUrls: [] },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -2828,7 +3043,7 @@ test('page script: effort target rows have level select, no ratio input', async 
         return pageJsonResponse(200, {
             ok: true,
             data: {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: true,
                 effortOverride: { enabled: true, level: 'high', baseUrls: ['https://a.com'] },
                 systemPromptOverride: { enabled: false, prompt: '' },
@@ -2892,7 +3107,7 @@ test('API: GET captured-system-prompt returns captured text or null', async (t) 
     t.after(() => { os.homedir = realHomedir; });
 
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run')
     });
     t.after(api.close);
@@ -2917,7 +3132,7 @@ test('API: GET captured-system-prompt returns captured text or null', async (t) 
 
 test('API: captured-system-prompt rejects invalid token and non-GET', async (t) => {
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run')
     });
     t.after(api.close);
@@ -2943,7 +3158,7 @@ test('API: GET /api/upstream-health returns snapshot, empty fallback and 405', a
     t.after(() => { os.homedir = realHomedir; });
 
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run')
     });
     t.after(api.close);
@@ -2996,7 +3211,7 @@ test('API: GET /api/upstream-health returns snapshot, empty fallback and 405', a
 test('API: rejects invalid token, Host and Origin without writes', async (t) => {
     let writes = 0;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => { writes += 1; }
     });
     t.after(api.close);
@@ -3028,7 +3243,7 @@ test('API: rejects invalid token, Host and Origin without writes', async (t) => 
 test('API: rejects method, content-type, oversized and invalid bodies', async (t) => {
     let writes = 0;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => { writes += 1; }
     });
     t.after(api.close);
@@ -3074,7 +3289,7 @@ test('API: rejects method, content-type, oversized and invalid bodies', async (t
 
 test('API: write failure returns 500 and server remains usable', async (t) => {
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: async () => { throw new Error('disk full'); }
     });
     t.after(api.close);
@@ -3096,7 +3311,7 @@ test('API: read failure returns 500 and server remains usable', async (t) => {
     const api = await startApi({
         read: async () => {
             if (shouldFail) throw new Error('read failed');
-            return { forwardSuggestionMode: false, thinkingAsText: true };
+            return { forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true };
         },
         write: () => assert.fail('write should not run')
     });
@@ -3114,11 +3329,11 @@ test('API: read failure returns 500 and server remains usable', async (t) => {
 test('API: accepts valid JSON at limit bytes and rejects chunked over limit', async (t) => {
     let update = null;
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: (partial) => {
             update = partial;
             return {
-                forwardSuggestionMode: false,
+                forwardSuggestionMode: { enabled: false, baseUrls: [] },
                 thinkingAsText: false
             };
         }
@@ -3139,7 +3354,7 @@ test('API: accepts valid JSON at limit bytes and rejects chunked over limit', as
     assert.deepEqual(await exact.json(), {
         ok: true,
         data: {
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: false
         }
     });
@@ -3356,7 +3571,7 @@ test('API body: rejects invalid timeout values', () => {
 
 test('page route returns required security headers', async (t) => {
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run')
     });
     t.after(api.close);
@@ -4132,7 +4347,7 @@ test('API: GET /api/usage returns 30-day usage report', async (t) => {
 
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             alerts: { dailyTokens: 0 },
             models: {}
@@ -4192,7 +4407,7 @@ test('API: /api/usage alert exceeded when threshold configured', async (t) => {
 
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             alerts: { dailyTokens: 100 },
             models: {}
@@ -4238,7 +4453,7 @@ test('API: GET /api/usage/export supports csv and json, rejects unknown format',
 
     const api = await startApi({
         read: () => ({
-            forwardSuggestionMode: false,
+            forwardSuggestionMode: { enabled: false, baseUrls: [] },
             thinkingAsText: true,
             alerts: { dailyTokens: 0 },
             models: {}
@@ -4342,7 +4557,7 @@ test('page script: renderUsageBoard renders bars, summary and per-model table', 
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'standard' }
                 }
@@ -4451,7 +4666,7 @@ test('page script: usage alert warn level renders yellow bar, dot and ratio', as
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'standard' }
                 }
@@ -4499,7 +4714,7 @@ test('page script: export buttons fetch with token and trigger download', async 
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'standard' }
                 }
@@ -4568,7 +4783,7 @@ test('page script: export buttons fetch with token and trigger download', async 
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'standard' }
                 }
@@ -4607,7 +4822,7 @@ test('page script: export buttons fetch with token and trigger download', async 
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'standard' }
                 }
@@ -4671,7 +4886,7 @@ test('page script: renderUpstreamHealth shows breaker badges per state', async (
         if (url === '/api/settings') {
             return pageJsonResponse(200, {
                 ok: true,
-                data: { forwardSuggestionMode: false, thinkingAsText: true }
+                data: { forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }
             });
         }
         if (url === '/api/session') return pageSessionResponse();
@@ -4726,7 +4941,7 @@ test('page script: renderRecentRequests renders rows, flags and toggle detail', 
             return pageJsonResponse(200, {
                 ok: true,
                 data: {
-                    forwardSuggestionMode: false,
+                    forwardSuggestionMode: { enabled: false, baseUrls: [] },
                     thinkingAsText: true,
                     effortOverride: { enabled: false, level: 'standard' }
                 }
@@ -4787,7 +5002,7 @@ test('page script: renderRecentRequests renders rows, flags and toggle detail', 
 
 test('API: /api/usage rejects invalid token and non-GET', async (t) => {
     const api = await startApi({
-        read: () => ({ forwardSuggestionMode: false, thinkingAsText: true }),
+        read: () => ({ forwardSuggestionMode: { enabled: false, baseUrls: [] }, thinkingAsText: true }),
         write: () => assert.fail('write should not run')
     });
     t.after(api.close);

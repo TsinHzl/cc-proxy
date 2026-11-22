@@ -7,7 +7,7 @@ import { DEFAULT_CONFIG, defaultConfigPath, readConfig, writeConfig } from '../s
 
 const EXPECTED_DEFAULT_CONFIG = {
     thinkingWindow: { enabled: false, lines: 10 },
-    forwardSuggestionMode: false,
+    forwardSuggestionMode: { enabled: false, baseUrls: [] },
     thinkingAsText: true,
     effortOverride: { enabled: true, level: 'high', baseUrls: [] },
     systemPromptOverride: { enabled: false, prompt: '' },
@@ -72,7 +72,8 @@ test('readConfig: old config without thinkingAsText defaults it to true', (t) =>
     }));
     assert.deepEqual(readConfig(dir), {
         thinkingWindow: { enabled: true, lines: 25 },
-        forwardSuggestionMode: true,
+        // 旧布尔 → 对象迁移：enabled 保留，列表为空。
+        forwardSuggestionMode: { enabled: true, baseUrls: [] },
         thinkingAsText: true,
         effortOverride: { enabled: true, level: 'high', baseUrls: [] },
         systemPromptOverride: { enabled: false, prompt: '' },
@@ -299,7 +300,7 @@ test('writeConfig: effortOverride write keeps other top-level settings', (t) => 
     writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
     const out = writeConfig({ effortOverride: { level: 'low' } }, dir);
     // 防丢失：写 effortOverride 不得重置已保存的顶层开关。
-    assert.equal(out.forwardSuggestionMode, true);
+    assert.equal(out.forwardSuggestionMode.enabled, true);
     assert.equal(out.thinkingAsText, false);
     assert.deepEqual(out.effortOverride, { enabled: true, level: 'low', baseUrls: [] });
 });
@@ -389,7 +390,7 @@ test('writeConfig: systemPromptOverride write keeps other top-level settings', (
     writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
     const out = writeConfig({ systemPromptOverride: { prompt: 'x' } }, dir);
     // 防丢失：写 systemPromptOverride 不得重置已保存的顶层开关。
-    assert.equal(out.forwardSuggestionMode, true);
+    assert.equal(out.forwardSuggestionMode.enabled, true);
     assert.equal(out.thinkingAsText, false);
     assert.deepEqual(out.systemPromptOverride, { enabled: false, prompt: 'x' });
 });
@@ -460,7 +461,7 @@ test('writeConfig: usageScale write keeps other top-level settings', (t) => {
     const dir = tmpDir(t);
     writeConfig({ forwardSuggestionMode: true, thinkingAsText: false }, dir);
     const out = writeConfig({ usageScale: { enabled: true } }, dir);
-    assert.equal(out.forwardSuggestionMode, true);
+    assert.equal(out.forwardSuggestionMode.enabled, true);
     assert.equal(out.thinkingAsText, false);
     assert.deepEqual(out.usageScale, { enabled: true, ratio: 1, baseUrls: [] });
 });
@@ -725,27 +726,82 @@ test('writeConfig: partial merge keeps other field', (t) => {
     assert.equal(out.thinkingWindow.enabled, true);
 });
 
-test('writeConfig: forwardSuggestionMode persists, defaults to false', (t) => {
+test('writeConfig: forwardSuggestionMode persists, defaults to disabled', (t) => {
     const dir = tmpDir(t);
-    assert.equal(readConfig(dir).forwardSuggestionMode, false);
+    assert.deepEqual(readConfig(dir).forwardSuggestionMode, { enabled: false, baseUrls: [] });
+    // 旧式布尔 partial 仍是合法入参：仅映射 enabled。
     const out = writeConfig({ forwardSuggestionMode: true }, dir);
-    assert.equal(out.forwardSuggestionMode, true);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).forwardSuggestionMode, true);
+    assert.equal(out.forwardSuggestionMode.enabled, true);
+    assert.deepEqual(
+        JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')).forwardSuggestionMode,
+        { enabled: true, baseUrls: [] }
+    );
 });
 
 test('writeConfig: thinkingWindow write keeps forwardSuggestionMode (top-level merge)', (t) => {
     const dir = tmpDir(t);
-    writeConfig({ forwardSuggestionMode: true }, dir);
+    writeConfig({ forwardSuggestionMode: { enabled: true, baseUrls: ['https://a.com'] } }, dir);
     const out = writeConfig({ thinkingWindow: { enabled: true, lines: 3 } }, dir);
-    // 防丢失：写 thinkingWindow 不得重置已保存的顶层开关。
-    assert.equal(out.forwardSuggestionMode, true);
+    // 防丢失：写 thinkingWindow 不得重置已保存的顶层开关与定向列表。
+    assert.deepEqual(out.forwardSuggestionMode, { enabled: true, baseUrls: ['https://a.com'] });
     assert.equal(out.thinkingWindow.lines, 3);
 });
 
-test('normalizeConfig: non-boolean forwardSuggestionMode falls back to false', (t) => {
+test('normalizeConfig: invalid forwardSuggestionMode falls back field-by-field', (t) => {
     const dir = tmpDir(t);
-    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ forwardSuggestionMode: 'yes' }));
-    assert.equal(readConfig(dir).forwardSuggestionMode, false);
+    // 非布尔非对象的旧字段值：整体忽略，回退默认（不抛错）。
+    for (const value of ['yes', 1, null, ['x']]) {
+        fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ forwardSuggestionMode: value }));
+        assert.deepEqual(
+            readConfig(dir).forwardSuggestionMode,
+            { enabled: false, baseUrls: [] },
+            `forwardSuggestionMode=${JSON.stringify(value)}`
+        );
+    }
+    // 对象形态：enabled 非法仅回退该字段，baseUrls 仍按逐项校验保留合法项。
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        forwardSuggestionMode: { enabled: 'yes', baseUrls: ['https://a.com', 'bad', { url: 'https://b.com', forward: true }] }
+    }));
+    assert.deepEqual(readConfig(dir).forwardSuggestionMode, {
+        enabled: false,
+        baseUrls: ['https://a.com', { url: 'https://b.com', forward: true }]
+    });
+});
+
+test('readConfig: forwardSuggestionMode.baseUrls keeps forward tri-state, label, and dedupes', (t) => {
+    const dir = tmpDir(t);
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        forwardSuggestionMode: {
+            enabled: false,
+            baseUrls: [
+                'https://a.com',
+                { url: 'https://b.com', forward: true, label: '便宜上游' },
+                { url: 'https://c.com', forward: false },
+                // 规范串重复（尾斜杠归一）→ 仅保留首次出现
+                'https://a.com/',
+                // 非布尔 forward / 超长 label → 仅丢该字段，归一为纯字符串
+                { url: 'https://d.com', forward: 'yes', label: 'x'.repeat(81) }
+            ]
+        }
+    }));
+    assert.deepEqual(readConfig(dir).forwardSuggestionMode, {
+        enabled: false,
+        baseUrls: [
+            'https://a.com',
+            { url: 'https://b.com', forward: true, label: '便宜上游' },
+            { url: 'https://c.com', forward: false },
+            'https://d.com'
+        ]
+    });
+});
+
+test('writeConfig: forwardSuggestionMode object partial keeps sibling field', (t) => {
+    const dir = tmpDir(t);
+    writeConfig({ forwardSuggestionMode: { enabled: true, baseUrls: ['https://a.com'] } }, dir);
+    const out = writeConfig({ forwardSuggestionMode: { enabled: false } }, dir);
+    // 逐字段合并：只改 enabled 时定向列表保留。
+    assert.equal(out.forwardSuggestionMode.enabled, false);
+    assert.deepEqual(out.forwardSuggestionMode.baseUrls, ['https://a.com']);
 });
 
 test('writeConfig: cross-field partial writes preserve unrelated settings', (t) => {
@@ -753,7 +809,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
     const file = path.join(dir, 'config.json');
     fs.writeFileSync(file, JSON.stringify({
         thinkingWindow: { enabled: true, lines: 30 },
-        forwardSuggestionMode: true,
+        forwardSuggestionMode: { enabled: true, baseUrls: [] },
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] }
     }));
@@ -761,7 +817,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
     let out = writeConfig({ thinkingWindow: { lines: 40 } }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
-        forwardSuggestionMode: true,
+        forwardSuggestionMode: { enabled: true, baseUrls: [] },
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
@@ -775,7 +831,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
     out = writeConfig({ forwardSuggestionMode: false }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
-        forwardSuggestionMode: false,
+        forwardSuggestionMode: { enabled: false, baseUrls: [] },
         thinkingAsText: false,
         effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
@@ -789,7 +845,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
     out = writeConfig({ thinkingAsText: true }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
-        forwardSuggestionMode: false,
+        forwardSuggestionMode: { enabled: false, baseUrls: [] },
         thinkingAsText: true,
         effortOverride: { enabled: false, level: 'low', baseUrls: ['https://a.com'] },
         systemPromptOverride: { enabled: false, prompt: '' },
@@ -803,7 +859,7 @@ test('writeConfig: cross-field partial writes preserve unrelated settings', (t) 
     out = writeConfig({ effortOverride: { enabled: true, level: 'medium' } }, dir);
     assert.deepEqual(out, {
         thinkingWindow: { enabled: true, lines: 40 },
-        forwardSuggestionMode: false,
+        forwardSuggestionMode: { enabled: false, baseUrls: [] },
         thinkingAsText: true,
         // 未提交 baseUrls：逐字段合并保留原列表（不被重置为空）。
         effortOverride: { enabled: true, level: 'medium', baseUrls: ['https://a.com'] },
@@ -946,7 +1002,7 @@ test('writeConfig: upstreams written to disk are preserved verbatim', (t) => {
     // 再次写其他字段时 upstreams 不被静默丢弃。
     const out2 = writeConfig({ forwardSuggestionMode: true }, dir);
     assert.deepEqual(out2.upstreams, upstreams);
-    assert.equal(out2.forwardSuggestionMode, true);
+    assert.equal(out2.forwardSuggestionMode.enabled, true);
     // normalizeConfig 仍会对回读值做清洗：非法项被移除。
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
         forwardSuggestionMode: true,

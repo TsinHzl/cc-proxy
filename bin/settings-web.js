@@ -28,7 +28,8 @@ const MAX_PROMPT_BYTES = 256 * 1024;
 // 目标上游备注上限：与 src/settings.js 的 MAX_TARGET_LABEL_LENGTH 一致。
 const MAX_TARGET_LABEL_LENGTH = 80;
 const ALLOWED_KEYS = new Set([
-    'forwardSuggestionMode',
+    'forwardSuggestionMode.enabled',
+    'forwardSuggestionMode.baseUrls',
     'thinkingAsText',
     'effortOverride.enabled',
     'effortOverride.level',
@@ -313,7 +314,7 @@ async function handleSessionRequest(context, req, res, url) {
 }
 
 // 单值 base URL 校验：字符串且 trim 后非空、可 new URL 解析、协议限
-// http/https。usageScale / effortOverride 两个校验入口共用。
+// http/https。usageScale / effortOverride / forwardSuggestionMode 三个校验入口共用。
 function isHttpUrl(value) {
     if (typeof value !== 'string') return false;
     const text = value.trim();
@@ -370,6 +371,21 @@ function isValidEffortTargetArray(value) {
     });
 }
 
+// forwardSuggestionMode.baseUrls 校验：混合数组——字符串项须为合法 http(s) URL；
+// 对象项须为非数组对象、url 合法、forward 若存在须为布尔、label 若存在须不超
+// 80 字符。任一非法项整次提交判 400（与 settings.js cleanSuggestionTargets
+// 同口径，差异在于此处判 400 而非静默丢弃）。
+function isValidSuggestionTargetArray(value) {
+    if (!Array.isArray(value)) return false;
+    return value.every((item) => {
+        if (typeof item === 'string') return isHttpUrl(item);
+        if (item === null || typeof item !== 'object' || Array.isArray(item)) return false;
+        if (!isHttpUrl(item.url)) return false;
+        if (!isValidTargetLabel(item.label)) return false;
+        return item.forward === undefined || typeof item.forward === 'boolean';
+    });
+}
+
 // 点号 key（effortOverride.* / systemPromptOverride.*）按 key 分流校验
 // value 类型；顶层布尔 key 维持原有布尔校验。
 function isValidSettingsPatch(body) {
@@ -389,6 +405,7 @@ function isValidSettingsPatch(body) {
     }
     if (body.key === 'usageScale.baseUrls') return isValidScaleTargetArray(body.value);
     if (body.key === 'effortOverride.baseUrls') return isValidEffortTargetArray(body.value);
+    if (body.key === 'forwardSuggestionMode.baseUrls') return isValidSuggestionTargetArray(body.value);
     return typeof body.value === 'boolean';
 }
 
@@ -435,10 +452,11 @@ async function handleSettingsPatch(context, req, res, host) {
         // 点号 key 展开为嵌套 partial（{ effortOverride: { level: value } }），
         // 顶层 key 直接映射，writeConfig 逐字段合并保留未提交字段。
         const [group, leaf] = body.key.split('.');
-        // baseUrls 在边界处按 group 归一：usageScale 为混合数组，字符串项
-        // trim，对象项只保留 url / ratio / label 三键（丢弃未提供的可选键，
-        // 避免落盘出现空比例 / 空备注字段），与 settings.js cleanScaleTargets
-        // 的落盘口径一致；effortOverride 同样只保留 url / level / label 三键。
+        // baseUrls 在边界处按 group 归一：usageScale / effortOverride /
+        // forwardSuggestionMode 均为混合数组，字符串项 trim，对象项只保留
+        // url + 各自的值键（ratio / level / forward）+ label 三键（丢弃未提供的
+        // 可选键，避免落盘出现空比例 / 空备注字段），分别与 settings.js
+        // cleanScaleTargets / cleanEffortTargets / cleanSuggestionTargets 的落盘口径一致。
         const normalizeTargetEntry = (item, valueKey) => {
             if (typeof item === 'string') return item.trim();
             const entry = { url: item.url.trim() };
@@ -451,7 +469,9 @@ async function handleSettingsPatch(context, req, res, host) {
             ? body.value.map((item) => normalizeTargetEntry(item, 'ratio'))
             : body.key === 'effortOverride.baseUrls'
                 ? body.value.map((item) => normalizeTargetEntry(item, 'level'))
-                : body.value;
+                : body.key === 'forwardSuggestionMode.baseUrls'
+                    ? body.value.map((item) => normalizeTargetEntry(item, 'forward'))
+                    : body.value;
         const patch = leaf
             ? { [group]: { [leaf]: value } }
             : { [body.key]: value };

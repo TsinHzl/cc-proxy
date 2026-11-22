@@ -1,12 +1,12 @@
-// 定向目标上游列表工厂：usageScale 与 effortOverride 共用同一套行增删 /
-// 本地 URL 校验 / blur 全量提交逻辑，按 key 前缀生成元素 id（<key>TargetList、
+// 定向目标上游列表工厂：usageScale / effortOverride / forwardSuggestionMode
+// 共用同一套行增删 / 本地 URL 校验 / blur 全量提交逻辑，按 key 前缀生成元素 id（<key>TargetList、
 // <key>TargetAdd）与 controller。settings-page.js 只做接线：拼接 HTML/样式/
 // 脚本，并在 setDisabled / applySettings / acceptSettings 三处调用本模块
 // 导出的控制器函数（syncTargetListControls / renderTargetLists /
 // targetListSnapshot）。
 // 约束：脚本部分为模板字符串字面量，内部禁止使用反引号模板串（用字符串拼接）。
 
-// 两个列表的描述：key 决定元素 id 前缀，group 决定提交的配置命名空间。
+// 三个列表的描述：key 决定元素 id 前缀，group 决定提交的配置命名空间。
 export const SCALE_TARGET_LIST = {
     key: 'scale',
     group: 'usageScale',
@@ -33,7 +33,20 @@ export const EFFORT_TARGET_LIST = {
     label: true
 };
 
-export const TARGET_LISTS = [SCALE_TARGET_LIST, EFFORT_TARGET_LIST];
+export const SUGGESTION_TARGET_LIST = {
+    key: 'suggestion',
+    group: 'forwardSuggestionMode',
+    title: '目标上游 Base URL（留空 = 按上方全局开关）',
+    hint: '仅当实际转发命中的上游完整 base URL 匹配列表项时覆盖转发策略；未配置时对所有上游按上方全局开关生效。'
+        + '每行可选策略：「继承全局」表示跟随上方开关；多条命中时路径更长（更具体）的条目录生效。'
+        + '备注仅用于标识厂商，不参与转发。修改后下次启动会话生效。',
+    // 行内策略下拉声明：空值 = 继承全局开关（提交为纯字符串形态）。
+    forward: true,
+    // 行内备注输入声明：空值 = 无备注（不写入配置）。
+    label: true
+};
+
+export const TARGET_LISTS = [SCALE_TARGET_LIST, EFFORT_TARGET_LIST, SUGGESTION_TARGET_LIST];
 
 const TARGET_LIST_STYLES = `
 .targets { display: block; padding: 0 16px 14px; }
@@ -93,6 +106,7 @@ export function buildTargetListScript(lists) {
         group: item.group,
         levels: item.levels ?? null,
         ratio: item.ratio ?? false,
+        forward: item.forward ?? false,
         label: item.label ?? false
     })));
     return `
@@ -113,15 +127,16 @@ export function buildTargetListScript(lists) {
             for (const entry of rows) {
                 entry.input.disabled = disabled;
                 if (entry.levelSelect) entry.levelSelect.disabled = disabled;
+                if (entry.forwardSelect) entry.forwardSelect.disabled = disabled;
                 if (entry.ratioInput) entry.ratioInput.disabled = disabled;
                 if (entry.labelInput) entry.labelInput.disabled = disabled;
                 entry.remove.disabled = disabled;
             }
         }
 
-        // 产出混合形态：比例与备注均为空 → 纯字符串（继承全局、无备注）；
-        // 否则对象 { url, ratio?, level?, label? }。比例 / 档位由列表描述
-        // 决定（ratio 列表无档位，levels 列表无比例），备注为两列表共用。
+        // 产出混合形态：比例 / 档位 / 转发策略 / 备注均为空 → 纯字符串（继承全局、
+        // 无备注）；否则对象 { url, ratio?, level?, forward?, label? }。比例 /
+        // 档位 / 转发策略由列表描述决定（各列表只声明自己那一种），备注为三列表共用。
         function currentValues() {
             const values = [];
             for (const entry of rows) {
@@ -129,14 +144,16 @@ export function buildTargetListScript(lists) {
                 if (!url) continue;
                 const ratio = entry.ratioInput ? entry.ratioInput.value.trim() : '';
                 const level = entry.levelSelect ? entry.levelSelect.value : '';
+                const forward = entry.forwardSelect ? entry.forwardSelect.value : '';
                 const label = entry.labelInput ? entry.labelInput.value.trim() : '';
-                if (!ratio && !level && !label) {
+                if (!ratio && !level && !forward && !label) {
                     values.push(url);
                     continue;
                 }
                 const item = { url };
                 if (ratio) item.ratio = Number(ratio);
                 else if (level) item.level = level;
+                else if (forward) item.forward = forward === 'true';
                 if (label) item.label = label;
                 values.push(item);
             }
@@ -174,7 +191,26 @@ export function buildTargetListScript(lists) {
                 levelSelect.value = (value && typeof value === 'object' ? value.level : '') || '';
                 levelSelect.addEventListener('change', () => submit());
             }
-            // 数值比例输入仅在该列表声明 ratio 时创建（effort 列表保持无比例框）。
+            // 三态策略下拉仅在该列表声明 forward 时创建（Suggestion Mode 列表）。
+            // 复用 .target-level 样式，与 effort 档位下拉外观一致。
+            let forwardSelect = null;
+            if (spec.forward) {
+                forwardSelect = document.createElement('select');
+                forwardSelect.className = 'target-level';
+                forwardSelect.setAttribute('aria-label', '该上游的 Suggestion Mode 策略');
+                const options = [['', '继承全局'], ['true', '强制转发'], ['false', '强制拦截']];
+                for (const [optionValue, text] of options) {
+                    const option = document.createElement('option');
+                    option.value = optionValue;
+                    option.textContent = text;
+                    forwardSelect.appendChild(option);
+                }
+                // 对象输入且 forward 为布尔时回填；字符串 / 未指定即「继承全局」。
+                forwardSelect.value = (value && typeof value === 'object'
+                    && typeof value.forward === 'boolean') ? String(value.forward) : '';
+                forwardSelect.addEventListener('change', () => submit());
+            }
+            // 数值比例输入仅在该列表声明 ratio 时创建（effort / suggestion 列表保持无比例框）。
             let ratioInput = null;
             if (spec.ratio) {
                 ratioInput = document.createElement('input');
@@ -189,7 +225,7 @@ export function buildTargetListScript(lists) {
                 ratioInput.addEventListener('input', () => {});
                 ratioInput.addEventListener('blur', () => submit());
             }
-            // 备注输入仅在该列表声明 label 时创建（两列表当前均声明）。
+            // 备注输入仅在该列表声明 label 时创建（三列表当前均声明）。
             // 仅用于人工识别厂商 / 用途：不参与转发与匹配，可为空。
             let labelInput = null;
             if (spec.label) {
@@ -212,10 +248,11 @@ export function buildTargetListScript(lists) {
             row.appendChild(input);
             if (ratioInput) row.appendChild(ratioInput);
             if (levelSelect) row.appendChild(levelSelect);
+            if (forwardSelect) row.appendChild(forwardSelect);
             if (labelInput) row.appendChild(labelInput);
             row.appendChild(remove);
             listEl.appendChild(row);
-            const entry = { row, input, levelSelect, ratioInput, labelInput, remove };
+            const entry = { row, input, levelSelect, forwardSelect, ratioInput, labelInput, remove };
             rows.push(entry);
             input.addEventListener('blur', () => submit());
             // pointerdown 仅阻止焦点转移（避免输入框 blur 提交把按钮置 disabled
@@ -244,8 +281,8 @@ export function buildTargetListScript(lists) {
         }
 
         // 本地校验：逐项须为可解析的 http(s) URL；条目比例（若该列表声明）
-        // 须为有限数 ∈ (0,10]；条目备注（若该列表声明）须不超长；任一非法时
-        // 不提交并回滚展示。
+        // 须为有限数 ∈ (0,10]；条目策略（若该列表声明）须为布尔；条目备注
+        // （若该列表声明）须不超长；任一非法时不提交并回滚展示。
         function isUrl(value) {
             try {
                 const parsed = new URL(value);
@@ -261,6 +298,7 @@ export function buildTargetListScript(lists) {
             if (typeof item === 'string') return isUrl(item);
             return isUrl(item.url)
                 && (item.ratio === undefined || isValidRatio(item.ratio))
+                && (item.forward === undefined || typeof item.forward === 'boolean')
                 && (item.label === undefined
                     || (typeof item.label === 'string' && item.label.length <= MAX_LABEL_LENGTH));
         }

@@ -7,6 +7,7 @@ import { RECENT_REQUESTS_SCRIPT } from './settings-page-recent-requests.js';
 import {
     EFFORT_TARGET_LIST,
     SCALE_TARGET_LIST,
+    SUGGESTION_TARGET_LIST,
     TARGET_LISTS,
     buildTargetListHtml,
     buildTargetListScript,
@@ -155,6 +156,7 @@ const PAGE_BODY = `
                 <span class="track" aria-hidden="true"></span>
             </label>
         </div>
+` + buildTargetListHtml(SUGGESTION_TARGET_LIST) + `
         <div class="setting">
             <div class="copy">
                 <h2>思考内容文本化展示</h2>
@@ -456,7 +458,11 @@ const PAGE_SCRIPT = `
                     ? data.systemPromptOverride?.enabled
                     : key === 'usageScaleEnabled'
                         ? data.usageScale?.enabled
-                        : data[key];
+                        : key === 'forwardSuggestionMode'
+                            // 服务端返回对象；布尔仅作旧快照兼容。
+                            ? (data.forwardSuggestionMode?.enabled
+                                ?? data.forwardSuggestionMode)
+                            : data[key];
             document.getElementById(key).checked = value;
         }
         document.getElementById('effortOverrideLevel').value
@@ -475,7 +481,12 @@ const PAGE_SCRIPT = `
     function acceptSettings(data) {
         const targetListBases = targetListSnapshot(data);
         authoritativeSnapshot = {
-            forwardSuggestionMode: data.forwardSuggestionMode,
+            forwardSuggestionMode: {
+                enabled: typeof data.forwardSuggestionMode === 'object'
+                    ? data.forwardSuggestionMode?.enabled
+                    : data.forwardSuggestionMode,
+                baseUrls: targetListBases.forwardSuggestionMode
+            },
             thinkingAsText: data.thinkingAsText,
             effortOverride: {
                 enabled: data.effortOverride?.enabled,
@@ -577,7 +588,9 @@ const PAGE_SCRIPT = `
                     ? 'systemPromptOverride.enabled'
                     : key === 'usageScaleEnabled'
                         ? 'usageScale.enabled'
-                        : key;
+                        : key === 'forwardSuggestionMode'
+                            ? 'forwardSuggestionMode.enabled'
+                            : key;
             saving = true;
             setDisabled(true);
             try {
