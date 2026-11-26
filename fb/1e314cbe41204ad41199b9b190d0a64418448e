@@ -1,0 +1,35 @@
+test/proxy-effort.test.mjs
+  44a90045b65540da 141,166,174,176-179,247,259,265,268-271
+test/settings-web.test.mjs
+  44a90045b65540da 44-46
+README.md
+  44a90045b65540da 137,181-182,210-211
+src/proxy.js
+  44a90045b65540da 253-254,527-530,534,606-609,612-616
+bin/settings-page-targetlist.js
+  44a90045b65540da 14,27
+test/proxy-usage-scale.test.mjs
+  44a90045b65540da 240,260,268-269,337,351,359,370,389
+openspec/specs/usage-display-scale/spec.md
+  44a90045b65540da 7,29-30,32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "fb1e314cbe41204ad41199b9b190d0a64418448e",
+  "prompts": {
+    "44a90045b65540da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3e1cd3f-b008-43f4-887f-18442906563c",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 54,
+      "total_deletions": 61,
+      "accepted_lines": 53,
+      "overriden_lines": 0
+    }
+  }
+}
