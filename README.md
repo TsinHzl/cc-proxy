@@ -5,7 +5,8 @@
 # cc-proxy
 
 claude code 本地代理：让直连 Anthropic API / 任意第三方网关的 Claude Code 会话，
-也能展示深度思考文案（`> 💭 Thinking` 灰色引文流式渲染，移植自 agy-cc-proxy）。
+也能实时展示深度思考文案（`💭 Thinking` 暗色逐行流式渲染，移植自 agy-cc-proxy）。
+流式结束后自动折叠为 Claude Code 原生可折叠 thinking 块，可随时展开。
 
 ![Thinking 渲染效果](docs/screenshot-thinking.png)
 
@@ -97,32 +98,49 @@ ANTHROPIC_BASE_URL=https://gw.example.com/api cc-proxy
 }
 ```
 
-请求按顺序转发：主上游（`ANTHROPIC_BASE_URL`）→ `upstreams` 数组各项。主上游对
+候选顺序：主上游（`ANTHROPIC_BASE_URL`）→ `upstreams` 数组各项。主上游对
 502/503/529 做同上游重试（1s/2s/4s）耗尽，或遇到 429/500（立即切换）、连接级失败
-（同上游重试耗尽）后，切到下一个备用上游，并合并该项 `headers`（如各自的 API
+（同上游重试耗尽）后，切到下一个候选上游，并合并该项 `headers`（如各自的 API
 key）。全部上游失败时，客户端收到最后一个错误响应。`name` 缺省取 host；
 `baseUrl` 路径前缀拼接规则与主上游一致。
+
+备用上游并非严格按配置顺序：健康样本 ≥3 条时按**成功率降序、TTFT p50 升序**
+重排；主上游处于 `open` 时备用前置。样本不足的上游保持原序兜底，避免少量
+样本误导选路。
 
 > `headers` 中的密钥仅保存在 `~/.cc-proxy/config.json`（文件权限 0600），不打印
 > 到日志。启动横幅与切换事件通过 `CC_PROXY_LOG=1` 可见，默认静默。未配置
 > `upstreams` 时行为与现状完全一致。
 
-熔断保护：某上游连续失败 ≥3 次后进入 `open`（选路跳过，设置页显示「熔断中」徽标
-及剩余冷却秒数），30s 冷却后下一个请求作为 `half-open` 探测放行——成功则恢复、
-失败则重新熔断。全部上游均熔断时忽略熔断按原顺序尝试（熔断不是最终否决）。
+熔断保护（仅配置了 `upstreams` 时启用，单上游不创建熔断器）：某上游连续失败
+≥3 次后进入 `open`（选路跳过，设置页显示「熔断中」徽标及剩余冷却秒数），30s
+冷却后下一个请求作为 `half-open` 探测放行——成功则恢复、失败则重新熔断。全部
+上游均熔断时忽略熔断按原顺序尝试（熔断不是最终否决）。
 
 ### 渲染效果
 
-仅当客户端 UA 匹配 `claude-cli` / `claude-code` 时生效，thinking 块会被改写为：
+仅当客户端 UA 以 `claude-cli` / `claude-code` 开头（后接 `/`、空白或结束）时生效。
+流式阶段 thinking 块会被改写为：
 
 ```
 💭 Thinking
 逐行的思考内容（暗色显示）
 ```
 
-其他客户端（curl、各语言 SDK 等）流量原样透传，不做任何改写。
+每个思考块结束时追加一行时长摘要（`💭 Thought for 12s`，≥60s 显示 `1m16s`）。
+紧接着在同一索引位置**回写为原生 thinking 块**（含上游签名），Claude Code 会将其
+渲染为默认折叠的 `Thought for Xs` 条目，按 <kbd>Ctrl</kbd>+<kbd>O</kbd> 可展开 /
+折叠。这样既保留了逐行流式的观感，又不给正文留下展开的静态文本。
 
-多轮对话中，历史消息里已渲染的思考文本会在转发前剥离，避免上下文膨胀。
+其他客户端（curl、各语言 SDK 等）流量原样透传，不做任何改写，也**不计入本地
+用量统计**。
+
+多轮对话中，历史消息里已渲染的思考文本会在转发前剥离，避免上下文膨胀；缺少
+有效 `signature` 的 thinking 块会被直接丢弃，避免第三方网关回传时触发上游签名
+校验错误。
+
+单块思考文本上限 256KB、整条响应上限 1MB，超限的块按「已流式输出部分原样收尾」
+处理，不中断流。
 
 ### 设置页
 
@@ -146,7 +164,39 @@ cc-proxy --setting
 
 看板接口为 `GET /api/usage`、`GET /api/upstream-health`、`GET /api/recent-requests`；任一失败时静默降级为占位文案，绝不阻断设置功能。
 
+完整接口清单：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/` | 设置页 HTML（注入一次性 bootstrap nonce） |
+| `POST` | `/api/bootstrap` | 用 nonce 兑换会话 token（30s 有效、仅可用一次） |
+| `GET` | `/api/session` | SSE 租约（心跳 10s） |
+| `GET` / `PATCH` | `/api/settings` | 读取 / 写入设置（PATCH 仅允许 5 组开关及其定向列表） |
+| `GET` | `/api/captured-system-prompt` | 读取已捕获的 CC 默认系统提示词 |
+| `GET` | `/api/usage` | 近 30 天用量明细 |
+| `GET` | `/api/usage/export?format=csv\|json` | 导出用量 |
+| `GET` | `/api/upstream-health` | 上游健康快照 |
+| `GET` | `/api/recent-requests` | 最近请求快照 |
+
+> 设置页只能编辑 5 个开关与三条定向列表；`upstreams`、`alerts`、`usageAlert`、
+> `models` 需手改 `config.json`。
+
 五个开关会即时、原子地写入 `~/.cc-proxy/config.json`，并对下次启动的代理会话生效。新配置文件权限为 `0600`；更新已有配置时保留原权限。页面在初始化和保存期间禁用全部控件，保存成功后采用服务端返回的完整设置，失败时回滚到最近一次服务端权威状态。
+
+配置键与页面区块对应如下（`~/.cc-proxy/config.json`）：
+
+| 配置键 | 默认值 | 页面可编辑 |
+|---|---|---|
+| `forwardSuggestionMode` | `{ enabled: false, baseUrls: [] }` | ✅ |
+| `thinkingAsText` | `true` | ✅ |
+| `effortOverride` | `{ enabled: true, level: 'high', baseUrls: [] }` | ✅ |
+| `systemPromptOverride` | `{ enabled: false, prompt: '' }` | ✅ |
+| `usageScale` | `{ enabled: false, ratio: 1.0, baseUrls: [] }` | ✅ |
+| `upstreams` | `[]` | ❌ |
+| `alerts` | `{ dailyTokens: 0, dailyCost: 0 }` | ❌ |
+| `usageAlert` | `{ warnThreshold: 0.8, limitThreshold: 1.0 }` | ❌ |
+| `models` | `{}` | ❌ |
+| `thinkingWindow` | `{ enabled: false, lines: 10 }` | ❌（**保留字段，当前版本无消费方**） |
 
 #### 系统提示词覆写
 
@@ -223,6 +273,16 @@ http://127.0.0.1:<port>/
 
 每次加载页面都会获得一个 30 秒有效、仅可兑换一次的 Bootstrap nonce；页面通过同源请求兑换临时 API token，token 不进入 URL、终端输出或 Referer。未消费 nonce 最多保留 256 个，超限时淘汰最旧项。
 
+完整防护链：
+
+1. **Host 校验**：`Host` 头必须精确等于 `127.0.0.1:<port>`，否则 403。
+2. **Origin 校验**：bootstrap 与 PATCH 要求 `Origin` 精确等于 `http://127.0.0.1:<port>`。
+3. **一次性 nonce**：30s TTL、单次消费、容量 256。
+4. **Token 校验**：`x-cc-proxy-token` 以 `timingSafeEqual` 常量时间比较。
+5. **响应头**：CSP `default-src 'none'` 且 `frame-ancestors 'none'`，`referrer-policy: no-referrer`。
+
+正文上限 320KB、读取超时 5s，`/api/*` 的非白名单路径一律 404。
+
 设置 API 仅接受不超过 320KB（327680 字节）的 JSON 正文，并对正文读取使用 5 秒绝对超时。最后一个设置页关闭后，服务等待 2 秒自动退出；宽限期内刷新并重新建立租约会取消退出。浏览器在 30 秒内未连接时，服务也会自动退出。关闭阶段若连接未在 1 秒内结束，服务会销毁残留 socket 并释放端口。浏览器未自动打开时，可手动访问终端输出的本地 URL。配置文件缺失或损坏时自动回退默认值，不影响启动。
 
 ### Suggestion Mode 输入建议
@@ -252,7 +312,10 @@ Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建
 
 ### 用量统计
 
-代理自动从响应（SSE `message_start`/`message_delta` 或非流式 JSON）中提取 token 用量，按天累计持久化到 `~/.cc-proxy/usage.json`：
+代理自动从响应（SSE `message_start`/`message_delta` 或非流式 JSON）中提取 token
+用量，按天累计持久化。存储为**双模式**：Node 内置 `node:sqlite` 可用时写
+`~/.cc-proxy/usage.db`，否则回退 `~/.cc-proxy/usage.json`。下方为 JSON 模式的
+文件结构：
 
 ```json
 {
@@ -271,6 +334,9 @@ Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建
 
 文件缺失或损坏时自动回退空统计，落盘失败不阻塞代理流量。`claude` 退出时会把本次会话的当日累计总结打印到 stderr（需 `CC_PROXY_LOG=1`）。
 
+> 展示缩放（`usageScale`）只影响**返回给 Claude Code 的值**；内部统计与看板始终
+> 记录上游真实值。非 Claude Code 客户端的请求不进入用量统计。
+
 ### 用量看板与告警
 
 ```bash
@@ -284,7 +350,8 @@ cc-proxy --setting
 - **缓存命中率**：`cacheRead / (cacheRead + cacheCreation + input)`，无请求时分母为 0，显示为 `n/a`。
 - **费用估算**：内置 claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5 默认价表（USD / 每百万 token），日期后缀变体（如 `claude-sonnet-5-2026xxxx`）按最长前缀匹配命中；未收录模型不显示费用。
 - **价表覆盖**：在 `~/.cc-proxy/config.json` 中配置 `models.<model>.pricing = { input, output, cacheRead, cacheCreation }` 即可覆盖内置价表（支持前缀键），精确键优先于前缀匹配。
-- **当日用量告警（分级）**：配置 `alerts.dailyTokens`（正整数）或 `alerts.dailyCost`（费用预算，美元，> 0 有效）后触发。比值 = `max(今日 tokens / dailyTokens, 今日费用 / dailyCost)`，默认 `usageAlert.warnThreshold = 0.8`（预警）/ `limitThreshold = 1.0`（超限）。预警时看板显示黄点「今日用量预警 · 已用 N%」，超限时红点「今日用量已超限 · 已用 N%」，同时 CLI 启动横幅前打印一条 WARNING；未配置（0）时不告警。
+- **当日用量告警（分级）**：配置 `alerts.dailyTokens`（正整数）或 `alerts.dailyCost`（费用预算，美元，> 0 有效）后触发。比值 = `max(今日 tokens / dailyTokens, 今日费用 / dailyCost)`，默认 `usageAlert.warnThreshold = 0.8`（预警）/ `limitThreshold = 1.0`（超限）。预警时看板显示黄点「今日用量预警 · 已用 N%」，超限时红点「今日用量已超限 · 已用 N%」；未配置（0）时不告警。
+- **CLI 启动告警**：代理启动时若 `alerts.dailyTokens > 0` 且**当日累计 tokens 已超过该原始阈值**，在启动横幅前打印一条 WARNING（需 `CC_PROXY_LOG=1` 可见）。此检查不读取 `dailyCost` 与 `usageAlert` 分级阈值，与看板红点相互独立。
 
 ```json
 {
@@ -324,6 +391,16 @@ CC_PROXY_DEBUG=1 cc-proxy
 - 写失败静默丢弃，绝不影响代理流量
 - 未设置时零开销、零文件
 
+## 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | 主上游；代理启动时读取并保存，spawn claude 时替换为本地地址 |
+| `CLAUDE_PROXY_BIN` | `claude` | 被 spawn 的 Claude Code 可执行名，可用于指向特定安装 |
+| `CC_PROXY_LOG` | 未设置（静默） | `=1` 时恢复 stderr 日志，并在 claude 退出时打印用量与延迟汇总 |
+| `CC_PROXY_DEBUG` | 未设置 | `=1` 时把每请求详情与 SSE 事件落盘到 `~/.cc-proxy/logs/` |
+| `CC_PROXY_CONFIG_DIR` | `~/.cc-proxy` | 仅旧终端设置菜单（`bin/settings-cli.js`）使用；主代理与 Web 设置页不读取 |
+
 ## 开发
 
 ```bash
@@ -345,17 +422,17 @@ npm test        # node:test 单元 + 端到端测试（全量）
 | `bin/settings-cli.js` | 旧终端设置菜单实现（当前 CLI 不再调用） |
 | `src/thinking-text.js` | 渲染核心：格式化、流式改写、历史剥离、UA 门控 |
 | `src/proxy.js` | HTTP 代理与响应改写（SSE / 非流式 JSON）、Suggestion Mode 拦截、usage/debug 挂接 |
-| `src/upstream.js` | 上游地址解析与请求转发 |
+| `src/upstream.js` | 上游地址解析、重试与故障转移转发（含 `FAILOVER_STATUS` 导出） |
 | `src/upstream-breaker.js` | 上游熔断器（连续失败≥3 → open → 30s 冷却 → half-open 探测恢复），供选路过滤与设置页徽标 |
 | `src/upstream-health.js` | 上游健康统计（滚动成功率 / TTFT 样本 / 故障转移事件）→ `runtime/upstream-health.json` |
-| `src/base-url-match.js` | 定向匹配原语（base URL 规范化 + 命中判定，usageScale / effortOverride / forwardSuggestionMode 共用） |
+| `src/base-url-match.js` | 定向匹配原语（base URL 规范化、段前缀命中、三态解析；三特性共用） |
 | `src/request-log.js` | 最近请求环形缓冲 200 条（头脱敏、不含 body）→ `runtime/recent-requests.json` |
 | `src/settings.js` | 配置读写（`~/.cc-proxy/config.json`），缺失/损坏回退默认值 |
 | `src/suggestion-mode.js` | 建议请求识别与空响应构建（流式/非流式） |
 | `src/system-prompt.js` | 系统提示词捕获与覆写（string / blocks 双形态） |
-| `src/usage.js` | 用量提取与按天持久化（`~/.cc-proxy/usage.json`），含 byModel 按模型分组 |
+| `src/usage.js` | 用量提取与按天持久化（JSON 模式），含 byModel 按模型分组 |
 | `src/usage-scale.js` | 客户端可见 usage 缩放（usageScale 配置；output 不缩放，内部统计真实值） |
-| `src/usage-store.js` | 用量存储抽象层（SQLite / JSON 双模式探测 + 历史 usage.json 导入） |
+| `src/usage-store.js` | 用量存储抽象层（`node:sqlite` 探测优先，失败回退 JSON；启动时导入既有 `usage.json`） |
 | `src/pricing.js` | 模型定价与费用估算（内置价表 + config 覆盖 + 前缀匹配）、缓存命中率 |
 | `src/latency.js` | 会话级延迟统计（TTFT / 总耗时 p50/p95、最慢 Top5；仅内存不落盘） |
 | `src/debug-log.js` | 请求级 debug 日志（`CC_PROXY_DEBUG=1`） |

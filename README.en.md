@@ -6,7 +6,9 @@
 
 A local transparent proxy for Claude Code: it lets sessions that talk directly to
 the Anthropic API or any third-party gateway display deep-thinking output as
-`> 💭 Thinking` dim blockquotes, streamed line by line (ported from agy-cc-proxy).
+`💭 Thinking` dim lines streamed in real time (ported from agy-cc-proxy). When a
+thinking block ends it collapses into Claude Code's native collapsible thinking
+block, which you can expand at any time.
 
 ![Thinking rendering effect](docs/screenshot-thinking.png)
 
@@ -105,33 +107,58 @@ upstreams (read once and fixed at startup):
 }
 ```
 
-Requests are forwarded in order: primary upstream (`ANTHROPIC_BASE_URL`) → each
-entry of `upstreams`. The primary gets same-upstream retries on 502/503/529
+Candidate order starts with the primary upstream (`ANTHROPIC_BASE_URL`) followed by
+each entry of `upstreams`. The primary gets same-upstream retries on 502/503/529
 (1s/2s/4s); once exhausted — or immediately on 429/500, or after connection-level
-failures exhaust retries — it fails over to the next backup upstream, merging that
+failures exhaust retries — it fails over to the next candidate, merging that
 entry's `headers` (e.g. its own API key). If all upstreams fail, the client
 receives the last error response. `name` defaults to the host; `baseUrl` path
 prefix handling matches the primary upstream.
+
+Backups are not strictly kept in config order: once a backup has at least 3 health
+samples it is re-ranked by **success rate descending, then TTFT p50 ascending**;
+when the primary is `open` the backups move to the front. Upstreams with too few
+samples keep their configured order so noise cannot steer routing.
 
 > Keys in `headers` are stored only in `~/.cc-proxy/config.json` (file mode 0600)
 > and never printed to logs. The startup banner and failover events are visible
 > with `CC_PROXY_LOG=1`, silent by default. Without `upstreams` configured,
 > behavior is identical to before.
 
+Circuit breaker (enabled only when `upstreams` is configured; a single upstream gets
+no breaker): an upstream that fails 3 times in a row becomes `open` (skipped during
+routing; the settings page shows a "circuit open" badge with the remaining cooldown).
+After a 30s cooldown the next request is let through as a `half-open` probe — success
+closes the circuit, failure re-opens it. If every upstream is open the proxy ignores
+the breaker and tries them in order (the breaker is not a final veto).
+
 ### Rendering
 
-Applies only when the client UA matches `claude-cli` / `claude-code`; thinking blocks
-are rewritten to:
+Applies only when the client UA starts with `claude-cli` / `claude-code` (followed by
+`/`, whitespace, or end of string). During streaming a thinking block is rewritten to:
 
 ```
 💭 Thinking
 line-by-line reasoning (dimmed)
 ```
 
-Other clients (curl, language SDKs, etc.) pass through untouched.
+When the block ends a duration line is appended (`💭 Thought for 12s`, or `1m16s`
+at 60s and above). Immediately after, the proxy emits a **native thinking block at the
+same index** (carrying the upstream signature), which Claude Code renders as a collapsed
+`Thought for Xs` entry you can expand or collapse with
+<kbd>Ctrl</kbd>+<kbd>O</kbd>. This keeps the line-by-line streaming feel without leaving
+an expanded static text block in the transcript.
+
+Other clients (curl, language SDKs, etc.) pass through untouched and are **not counted
+in local usage stats**.
 
 In multi-turn conversations, already-rendered thinking text in the message history is
-stripped before forwarding, so the context does not keep growing.
+stripped before forwarding, so the context does not keep growing; thinking blocks without
+a valid `signature` are dropped so gateways that echo them back cannot trigger upstream
+signature validation errors.
+
+Limits: 256KB of thinking text per block and 1MB per response. A block that exceeds them
+is closed with whatever already streamed instead of breaking the stream.
 
 ### Settings page
 
@@ -162,10 +189,54 @@ The dashboard endpoints are `GET /api/usage`, `GET /api/upstream-health` and
 `GET /api/recent-requests`; when one fails, its panel degrades silently to a placeholder
 and never blocks the settings page.
 
-The settings service binds `127.0.0.1` only, hands the page a one-time 30-second
-bootstrap nonce in exchange for a temporary API token (the token never enters the URL,
-terminal output, or Referer), and exits 2 seconds after the last settings page closes.
-A missing or corrupted config file falls back to defaults without affecting startup.
+Full endpoint list:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/` | Settings page HTML (one-time bootstrap nonce injected) |
+| `POST` | `/api/bootstrap` | Exchange the nonce for a session token (valid 30s, single use) |
+| `GET` | `/api/session` | SSE lease (10s heartbeat) |
+| `GET` / `PATCH` | `/api/settings` | Read / write settings (PATCH allows only the 5 switches and their target lists) |
+| `GET` | `/api/captured-system-prompt` | Read the captured CC default system prompt |
+| `GET` | `/api/usage` | Last 30 days of usage detail |
+| `GET` | `/api/usage/export?format=csv\|json` | Export usage |
+| `GET` | `/api/upstream-health` | Upstream health snapshot |
+| `GET` | `/api/recent-requests` | Recent requests snapshot |
+
+> The settings page edits only the 5 switches and three target lists; `upstreams`,
+> `alerts`, `usageAlert` and `models` must be edited by hand in `config.json`.
+
+The settings service binds `127.0.0.1` only, and exits 2 seconds after the last settings
+page closes. A missing or corrupted config file falls back to defaults without affecting
+startup.
+
+Switches are written atomically to `~/.cc-proxy/config.json` and take effect on the next
+proxy session; new files get mode `0600` and existing files keep their mode. Config keys
+map to page sections as follows:
+
+| Config key | Default | Editable in page |
+|---|---|---|
+| `forwardSuggestionMode` | `{ enabled: false, baseUrls: [] }` | ✅ |
+| `thinkingAsText` | `true` | ✅ |
+| `effortOverride` | `{ enabled: true, level: 'high', baseUrls: [] }` | ✅ |
+| `systemPromptOverride` | `{ enabled: false, prompt: '' }` | ✅ |
+| `usageScale` | `{ enabled: false, ratio: 1.0, baseUrls: [] }` | ✅ |
+| `upstreams` | `[]` | ❌ |
+| `alerts` | `{ dailyTokens: 0, dailyCost: 0 }` | ❌ |
+| `usageAlert` | `{ warnThreshold: 0.8, limitThreshold: 1.0 }` | ❌ |
+| `models` | `{}` | ❌ |
+| `thinkingWindow` | `{ enabled: false, lines: 10 }` | ❌ (**retained field, no consumer in this version**) |
+
+Security chain:
+
+1. **Host check** — the `Host` header must equal `127.0.0.1:<port>` exactly, otherwise 403.
+2. **Origin check** — bootstrap and PATCH require `Origin` to equal `http://127.0.0.1:<port>`.
+3. **One-time nonce** — 30s TTL, single use, capacity 256.
+4. **Token check** — `x-cc-proxy-token` compared in constant time via `timingSafeEqual`.
+5. **Response headers** — CSP `default-src 'none'` with `frame-ancestors 'none'`, and `referrer-policy: no-referrer`.
+
+Bodies are capped at 320KB with a 5s read timeout; any `/api/*` path outside the
+allowlist returns 404.
 
 #### System prompt override
 
@@ -214,25 +285,24 @@ the configured level before forwarding, regardless of CC's local setting. Key po
 - **Levels**: `low` / `medium` / `high` / `xhigh` / `max` / `ultracode`; an invalid value
   falls back to `high`.
 - **Targeted override (`baseUrls`)**: empty by default, meaning the override applies to
-  **all** upstreams. With a non-empty list, only the upstream this request is **about to
-  hit** receives the overridden body when its full base URL matches a list entry; other
-  upstreams get the un-overridden body (equivalent to the override being off). Matching
-  rules are identical to the usage display scaling: protocol + host + port (default ports
-  normalized as http→80 / https→443) must match exactly, and the path matches by
-  **segment prefix** (a configured `/api` hits `/api` and `/api/x`, not `/apiv2`; an empty
-  path covers every path of that origin); trailing slashes are normalized. Under
-  multi-upstream failover the decision is made **per candidate upstream**: switch to a
-  matching upstream and it gets the overridden body, switch to a non-matching one and it
-  gets the original. The settings page offers a dynamic target-upstream list for the
+  **all** upstreams. With a non-empty list, a matching entry gives that upstream its own
+  level, while **upstreams matching no entry still get the global `level`** (same as an
+  empty list). Matching rules are identical to the usage display scaling: protocol + host
+  + port (default ports normalized as http→80 / https→443) must match exactly, and the
+  path matches by **segment prefix** (a configured `/api` hits `/api` and `/api/x`, not
+  `/apiv2`; an empty path covers every path of that origin); trailing slashes are
+  normalized. Under multi-upstream failover the decision is made **per candidate
+  upstream**: a matching one gets that entry's level body, a non-matching one gets the
+  global level body. The settings page offers a dynamic target-upstream list for the
   `Effort 覆写` block (add / remove / save on blur), with invalid URLs blocked locally
   from being submitted.
 - **Per-entry level**: `baseUrls` entries come in two forms that can be mixed in one
   array — a plain string such as `"https://a.example.com"` means **that entry inherits
   the global `level`**, while an object `{ "url": ..., "level": ... }` gives that upstream
   its own level. In the example above `gateway.example.com/api` receives `max`,
-  `a.example.com` receives the global `high`, and non-matching upstreams keep CC's local
-  level. Each row in the settings page has a level dropdown, where `继承全局` corresponds
-  to the string form.
+  `a.example.com` receives the global `high`, and non-matching upstreams fall back to the
+  global `level`. Each row in the settings page has a level dropdown, where `继承全局`
+  corresponds to the string form.
 - **Per-entry label**: an object entry may carry an optional `label` (up to 80 characters)
   to annotate which vendor / purpose the URL serves (e.g. "Volcengine Ark"). The label is
   **display-only**: it takes no part in matching or forwarding and never affects the level.
@@ -288,22 +358,22 @@ output-length calculations stay unaffected). Key points:
 - **Custom ratio**: a finite number in (0, 10] — scale down (e.g. `0.5`, delaying
   auto-compact) or up (e.g. `2`, triggering it earlier).
 - **Targeted scaling (`baseUrls`)**: empty by default, meaning scaling applies to **all**
-  upstreams. With a non-empty list, scaling applies only when the full base URL of the
-  upstream that **actually served the response** matches a list entry; other upstreams
-  pass through 1:1. Matching rules: protocol + host + port (default ports normalized as
-  http→80 / https→443) must match exactly, and the path matches by **segment prefix** (a
-  configured `/api` hits `/api` and `/api/x`, not `/apiv2`; an empty path covers every path
-  of that origin); trailing slashes are normalized. Under multi-upstream failover the
-  decision uses the upstream of the final response. The settings page offers a dynamic
+  upstreams. With a non-empty list, a matching entry scales by that entry's ratio, while
+  **upstreams matching no entry still scale by the global `ratio`** (same as an empty
+  list). Matching rules: protocol + host + port (default ports normalized as http→80 /
+  https→443) must match exactly, and the path matches by **segment prefix** (a configured
+  `/api` hits `/api` and `/api/x`, not `/apiv2`; an empty path covers every path of that
+  origin); trailing slashes are normalized. Under multi-upstream failover the decision
+  uses the upstream of the final response. The settings page offers a dynamic
   target-upstream list for the `用量展示缩放` block (add / remove / save on blur), with
   invalid URLs blocked locally from being submitted.
 - **Per-entry ratio**: `baseUrls` entries are fully aligned with the Effort override and
   may be mixed in one array — a plain string such as `"https://a.example.com"` means that
   **entry inherits the global `ratio`**, while an object `{ "url": ..., "ratio": ... }`
   gives that upstream its own ratio. In the example above `gateway.example.com/api` scales
-  by `0.25`, `a.example.com` by the global `0.5`, and non-matching upstreams pass through
-  1:1. Each row in the settings page has a ratio input, where leaving it blank corresponds
-  to the string form (inheriting the global ratio).
+  by `0.25`, `a.example.com` by the global `0.5`, and non-matching upstreams by the global
+  `ratio`. Each row in the settings page has a ratio input, where leaving it blank
+  corresponds to the string form (inheriting the global ratio).
 - **Per-entry label**: same as the Effort override — an object entry may carry an optional
   `label` (up to 80 characters) naming the vendor / purpose. It is display-only and takes
   no part in forwarding; each row has a label input, and leaving it blank keeps the field
@@ -373,8 +443,9 @@ and never consume a breaker half-open probe slot.
 ### Usage tracking
 
 The proxy automatically extracts token usage from responses (SSE
-`message_start`/`message_delta` or non-streaming JSON) and persists daily
-totals to `~/.cc-proxy/usage.json`:
+`message_start`/`message_delta` or non-streaming JSON) and persists daily totals in one
+of two storage modes: `~/.cc-proxy/usage.db` when Node's built-in `node:sqlite` is
+available, otherwise `~/.cc-proxy/usage.json`. The structure below is the JSON mode:
 
 ```json
 {
@@ -394,6 +465,10 @@ totals to `~/.cc-proxy/usage.json`:
 A missing or corrupted file falls back to empty stats; write failures never
 block proxy traffic. When `claude` exits, the day's totals are printed to
 stderr (requires `CC_PROXY_LOG=1`).
+
+> Display scaling (`usageScale`) only changes **what Claude Code sees**; internal stats
+> and the dashboard always record the real upstream values. Requests from non-Claude-Code
+> clients are not counted at all.
 
 ### Usage dashboard and alerts
 
@@ -435,8 +510,11 @@ model are grouped under `unknown`).
   `max(today's tokens / dailyTokens, today's cost / dailyCost)`, with defaults
   `usageAlert.warnThreshold = 0.8` (warning) and `limitThreshold = 1.0` (over limit).
   A warning shows a yellow dot (`今日用量预警 · 已用 N%`), exceeding the limit a red dot
-  (`今日用量已超限 · 已用 N%`), and the CLI prints a WARNING before the startup banner;
-  when unset (0) nothing is emitted.
+  (`今日用量已超限 · 已用 N%`); when unset (0) nothing is emitted.
+- **CLI startup warning**: at startup, if `alerts.dailyTokens > 0` and today's cumulative
+  tokens already exceed that **raw** threshold, one WARNING is printed before the startup
+  banner (visible with `CC_PROXY_LOG=1`). This check ignores `dailyCost` and the
+  `usageAlert` tiers; it is independent of the dashboard dots.
 
 ```json
 {
@@ -499,6 +577,16 @@ compatibility:
 - Write failures are silently dropped and never affect proxy traffic
 - When unset: zero overhead, zero files
 
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Primary upstream; read and saved at startup, then replaced with the local address when spawning claude |
+| `CLAUDE_PROXY_BIN` | `claude` | Executable name spawned as Claude Code, e.g. to point at a specific install |
+| `CC_PROXY_LOG` | unset (silent) | `=1` restores stderr logging and prints the usage / latency summary when claude exits |
+| `CC_PROXY_DEBUG` | unset | `=1` writes per-request details and SSE events to `~/.cc-proxy/logs/` |
+| `CC_PROXY_CONFIG_DIR` | `~/.cc-proxy` | Used only by the legacy terminal settings menu (`bin/settings-cli.js`); the proxy and web settings page ignore it |
+
 ## Development
 
 ```bash
@@ -520,17 +608,17 @@ npm test        # node:test unit + end-to-end tests (full suite)
 | `bin/settings-cli.js` | Legacy terminal settings menu (no longer invoked by the CLI) |
 | `src/thinking-text.js` | Rendering core: formatting, streaming rewrite, history strip, UA gate |
 | `src/proxy.js` | HTTP proxy and response rewriting (SSE / non-streaming JSON), Suggestion Mode intercept, usage/debug hooks |
-| `src/upstream.js` | Upstream URL resolution and request forwarding |
+| `src/upstream.js` | Upstream URL resolution, retries and failover forwarding (exports `FAILOVER_STATUS`) |
 | `src/upstream-breaker.js` | Upstream circuit breaker (3 consecutive failures → open → 30s cooldown → half-open probe recovery), used by routing and the settings-page badge |
 | `src/upstream-health.js` | Upstream health stats (rolling success rate / TTFT samples / failover events) → `runtime/upstream-health.json` |
-| `src/base-url-match.js` | Targeting primitives (base URL normalization + hit test, shared by usageScale / effortOverride / forwardSuggestionMode) |
+| `src/base-url-match.js` | Targeting primitives (base URL normalization, segment-prefix hit test, three-state resolution; shared by all three features) |
 | `src/request-log.js` | Recent-request ring buffer (200 entries, redacted headers, no bodies) → `runtime/recent-requests.json` |
 | `src/settings.js` | Config read/write (`~/.cc-proxy/config.json`), missing/corrupt falls back to defaults |
 | `src/suggestion-mode.js` | Suggestion request detection and empty-response building (streaming/non-streaming) |
 | `src/system-prompt.js` | System prompt capture and override (string / blocks forms) |
-| `src/usage.js` | Usage extraction and daily persistence (`~/.cc-proxy/usage.json`), with per-model `byModel` grouping |
+| `src/usage.js` | Usage extraction and daily persistence (JSON mode), with per-model `byModel` grouping |
 | `src/usage-scale.js` | Client-visible usage scaling (usageScale config; output is never scaled, internal stats keep real values) |
-| `src/usage-store.js` | Usage storage abstraction (SQLite / JSON dual-mode detection + historical usage.json import) |
+| `src/usage-store.js` | Usage storage abstraction (`node:sqlite` detection first, JSON fallback; imports an existing `usage.json` at startup) |
 | `src/pricing.js` | Model pricing and cost estimation (built-in table + config override + prefix match), cache-hit rate |
 | `src/latency.js` | Session-level latency stats (TTFT / total p50/p95, 5 slowest; memory only, never persisted) |
 | `src/debug-log.js` | Per-request debug log (`CC_PROXY_DEBUG=1`) |
