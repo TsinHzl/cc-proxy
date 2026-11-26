@@ -138,7 +138,7 @@ test('non-CC user agent: effort override skipped, verbatim body', async () => {
     }
 });
 
-test('effort baseUrls targeting: matching primary overridden, non-matching keeps base body', async () => {
+test('effort baseUrls targeting: matching primary overridden, non-matching inherits global level', async () => {
     const { state, started } = startMockUpstream();
     const upstream = await started;
     const port = upstream.address().port;
@@ -163,8 +163,7 @@ test('effort baseUrls targeting: matching primary overridden, non-matching keeps
             hitProxy.close();
         }
 
-        // 未命中：配置其他 base → 与「覆写关闭」态一致（保留 CC 本地档位）。
-        const raw = bodyWithEffort();
+        // 未命中：配置其他 base → 回退全局档位 high（不再保留 CC 本地 low）。
         const missProxy = await startProxy(upstream, {
             effortOverride: {
                 enabled: true, level: 'high',
@@ -172,9 +171,12 @@ test('effort baseUrls targeting: matching primary overridden, non-matching keeps
             }
         });
         try {
-            const res = await post(missProxy.address().port, raw);
+            const res = await post(missProxy.address().port, bodyWithEffort());
             await res.text();
-            assert.equal(state.bodies[1], raw);
+            const forwarded = JSON.parse(state.bodies[1]);
+            assert.equal(forwarded.output_config.effort, 'high');
+            assert.equal(forwarded.effort, 'high');
+            assert.equal(forwarded.output_config.note, 'keep');
         } finally {
             missProxy.closeAllConnections?.();
             missProxy.close();
@@ -242,7 +244,7 @@ test('effort baseUrls targeting: failover to matching backup overrides on backup
     }
 });
 
-test('effort baseUrls targeting: failover to non-matching backup sends base body', async () => {
+test('effort baseUrls targeting: failover to non-matching backup inherits global level', async () => {
     const { state, started } = startMockUpstream();
     const backup = await started;
     const failing = await startFailingUpstream();
@@ -254,17 +256,19 @@ test('effort baseUrls targeting: failover to non-matching backup sends base body
         }],
         effortOverride: {
             enabled: true, level: 'high',
-            // 只配置主上游 → failover 后备用不命中 → 收到基准体。
+            // 只配置主上游 → failover 后备用不命中 → 收到全局档位体。
             baseUrls: [`http://127.0.0.1:${failing.address().port}`]
         }
     });
 
     try {
-        const raw = bodyWithEffort();
-        const res = await post(proxy.address().port, raw);
+        const res = await post(proxy.address().port, bodyWithEffort());
         await res.text();
         assert.equal(state.bodies.length, 1);
-        assert.equal(state.bodies[0], raw);
+        const forwarded = JSON.parse(state.bodies[0]);
+        assert.equal(forwarded.output_config.effort, 'high');
+        assert.equal(forwarded.effort, 'high');
+        assert.equal(forwarded.output_config.note, 'keep');
     } finally {
         proxy.closeAllConnections?.();
         failing.closeAllConnections?.();

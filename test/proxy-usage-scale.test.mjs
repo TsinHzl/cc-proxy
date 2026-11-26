@@ -237,7 +237,7 @@ test('usage scale enabled: non-streaming message JSON usage scaled, output kept'
 
 // ---------- 定向缩放（usageScale.baseUrls） ----------
 
-test('baseUrls targeting: primary hit scaled, non-hit passthrough', async () => {
+test('baseUrls targeting: primary hit scaled, non-hit inherits global ratio', async () => {
     const { started } = startMockUpstream({ events: SSE_EVENTS });
     const upstream = await started;
     const port = upstream.address().port;
@@ -257,7 +257,7 @@ test('baseUrls targeting: primary hit scaled, non-hit passthrough', async () => 
             hitProxy.close();
         }
 
-        // 未命中：配置另一个 base → 1:1 透传。
+        // 未命中：配置另一个 base → 回退全局 ratio 0.5。
         const missProxy = await startProxy(upstream, {
             usageScale: { enabled: true, ratio: 0.5, baseUrls: ['http://127.0.0.1:1'] }
         });
@@ -265,8 +265,8 @@ test('baseUrls targeting: primary hit scaled, non-hit passthrough', async () => 
             const res = await post(missProxy.address().port);
             const events = await readSseEvents(res);
             const start = events.find((e) => e.type === 'message_start');
-            assert.equal(start.message.usage.input_tokens, 1000);
-            assert.equal(start.message.usage.cache_read_input_tokens, 200);
+            assert.equal(start.message.usage.input_tokens, 500);
+            assert.equal(start.message.usage.cache_read_input_tokens, 100);
         } finally {
             missProxy.closeAllConnections?.();
             missProxy.close();
@@ -334,7 +334,7 @@ test('baseUrls targeting: failover to matching backup scales, non-matching passe
     }
 });
 
-test('baseUrls targeting: failover to non-matching backup passes through', async () => {
+test('baseUrls targeting: failover to non-matching backup inherits global ratio', async () => {
     const backup = await startMockUpstream({ events: SSE_EVENTS });
     const backupServer = await backup.started;
     const failing = await startFailingUpstream();
@@ -348,7 +348,7 @@ test('baseUrls targeting: failover to non-matching backup passes through', async
         usageScale: {
             enabled: true,
             ratio: 0.5,
-            // 只配置主上游 → failover 后备用不命中 → 1:1 透传。
+            // 只配置主上游 → failover 后备用不命中 → 回退全局 ratio 0.5。
             baseUrls: [`http://127.0.0.1:${failing.address().port}`]
         }
     });
@@ -356,7 +356,7 @@ test('baseUrls targeting: failover to non-matching backup passes through', async
         const res = await post(proxy.address().port);
         const events = await readSseEvents(res);
         const start = events.find((e) => e.type === 'message_start');
-        assert.equal(start.message.usage.input_tokens, 1000);
+        assert.equal(start.message.usage.input_tokens, 500);
     } finally {
         proxy.closeAllConnections?.();
         proxy.close();
@@ -367,7 +367,7 @@ test('baseUrls targeting: failover to non-matching backup passes through', async
     }
 });
 
-test('baseUrls targeting: non-streaming JSON respects hit/miss', async () => {
+test('baseUrls targeting: non-streaming JSON miss inherits global ratio', async () => {
     const { started } = startMockUpstream({
         json: {
             type: 'message',
@@ -386,7 +386,7 @@ test('baseUrls targeting: non-streaming JSON respects hit/miss', async () => {
         try {
             const res = await post(missProxy.address().port);
             const body = JSON.parse(await res.text());
-            assert.equal(body.usage.input_tokens, 1000);
+            assert.equal(body.usage.input_tokens, 500);
         } finally {
             missProxy.closeAllConnections?.();
             missProxy.close();

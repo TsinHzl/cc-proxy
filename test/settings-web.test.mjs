@@ -41,6 +41,9 @@ test('page: renders dark settings page with exactly five switches', () => {
     assert.match(html, /留空 = 对所有上游缩放/);
     assert.match(html, /留空 = 对所有上游覆写/);
     assert.match(html, /留空 = 按上方全局开关/);
+    // 未命中语义：Effort / 用量缩放均回退全局配置。
+    assert.match(html, /未命中任何条目的上游按上方全局比例缩放/);
+    assert.match(html, /未命中任何条目的上游按上方全局档位覆写/);
     // Effort 列表额外说明：档位继承语义与多条命中的仲裁规则。
     assert.match(html, /继承全局/);
     assert.match(html, /路径更长（更具体）的条目录生效/);

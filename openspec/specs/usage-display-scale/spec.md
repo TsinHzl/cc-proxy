@@ -4,7 +4,7 @@
 ## Requirements
 
 ### Requirement: 用量展示缩放按比例改写 usage 字段
-The system SHALL 在 `usageScale.enabled=true` 时按配置比例缩放返回给 Claude Code 的 usage **input 类字段**（`input_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens` 及 `cache_creation` 嵌套的 `ephemeral_*`，向上取整），`output_tokens` 不缩放；内部用量统计（`usage.json`）与设置看板始终记录上游真实值。`ratio` 为有限数 (0,10]，缺省 1.0（等效不缩放）；非 CC 客户端、错误响应与非 message JSON 一律原样透传。`baseUrls` 支持定向：非空列表时仅当实际命中上游的完整 base URL 匹配条目时缩放；条目为混合形态——纯字符串继承全局 `ratio`，对象 `{ url, ratio, label? }` 使用该条目自己的比例，可选 `label`（≤80 字符）为纯展示备注，不参与匹配与转发，为空/非字符串/超长时仅丢弃该字段；多条同时命中时路径更长（更具体）的条目录生效，同一 URL 规范串去重保留首项。配置在代理启动时读取一次，切换后需下次会话生效。
+The system SHALL 在 `usageScale.enabled=true` 时按配置比例缩放返回给 Claude Code 的 usage **input 类字段**（`input_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens` 及 `cache_creation` 嵌套的 `ephemeral_*`，向上取整），`output_tokens` 不缩放；内部用量统计（`usage.json`）与设置看板始终记录上游真实值。`ratio` 为有限数 (0,10]，缺省 1.0（等效不缩放）；非 CC 客户端、错误响应与非 message JSON 一律原样透传。`baseUrls` 支持定向：命中条目的上游按该条目比例缩放，未命中任何条目的上游 SHALL 回退全局 `ratio`（与列表留空时一致）；条目为混合形态——纯字符串继承全局 `ratio`，对象 `{ url, ratio, label? }` 使用该条目自己的比例，可选 `label`（≤80 字符）为纯展示备注，不参与匹配与转发，为空/非字符串/超长时仅丢弃该字段；多条同时命中时路径更长（更具体）的条目录生效，同一 URL 规范串去重保留首项。配置在代理启动时读取一次，切换后需下次会话生效。
 
 #### Scenario: 全局比例缩放
 - **GIVEN** `usageScale.enabled=true`、`ratio=0.5`、`baseUrls=[]`
@@ -26,10 +26,10 @@ The system SHALL 在 `usageScale.enabled=true` 时按配置比例缩放返回给
 - **WHEN** 请求命中 `a.com/api`
 - **THEN** 以 `/api` 条目的 `0.2` 缩放，而非 `a.com` 条目的值
 
-#### Scenario: 未命中的上游 1:1 透传
-- **GIVEN** `baseUrls=["https://a.com"]`
+#### Scenario: 未命中的上游回退全局比例
+- **GIVEN** `usageScale.enabled=true`、`ratio=0.5`、`baseUrls=["https://a.com"]`
 - **WHEN** 请求命中未配置的 `b.com`
-- **THEN** usage 字段不缩放（等效关闭态）
+- **THEN** 按全局 `0.5` 缩放该上游返回的 input 类字段
 
 #### Scenario: 旧纯字符串配置零迁移
 - **GIVEN** `baseUrls=["https://a.com"]`（纯字符串数组）

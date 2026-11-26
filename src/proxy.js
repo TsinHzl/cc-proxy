@@ -250,8 +250,8 @@ export function createProxyServer({
     // 定向缩放目标条目：null 表示未配置 / 全部非法（等效空列表 → 全量缩放）。
     // 关闭态（ratio null）无需构造，保持零开销。条目形态与 effortOverride
     // 共用 buildBaseUrlTargetEntries，每条目 value 为该上游独立比例
-    //（null = 未指定，回退全局 usageScaleRatio）。全局 ratio 只做兜底、
-    // 不作启用门——enabled 非 true 即不构造。
+    //（null = 未指定）。未命中条目同样回退全局 usageScaleRatio。全局 ratio
+    // 只做兜底、不作启用门——enabled 非 true 即不构造。
     const scaleTargetEntries = usageScale === null
         || typeof usageScale !== 'object'
         || usageScale.enabled !== true
@@ -414,10 +414,8 @@ export function createProxyServer({
 
             // Request-side history strip (CC UA only).
             let body = bodyBuffer;
-            // baseBody = 未叠加 Effort 覆写的基准体（历史剥离 + 系统提示词覆写后）。
             // parsedBody = 可解析且 Effort 覆写启用时的解析对象（按档位序列化的源），
             // 为 null（未启用 / 非 JSON）时走单体路径，与既有行为逐字节一致。
-            let baseBody = bodyBuffer;
             let parsedBody = null;
             if (isClaudeCode && bodyBuffer.length) {
                 try {
@@ -447,9 +445,6 @@ export function createProxyServer({
                             body = Buffer.from(JSON.stringify(parsed), 'utf8');
                         }
                     }
-                    // 基准体定格：此后仅 Effort 覆写分支再改 parsed（两者字段
-                    // 互不相交，与系统提示词覆写的先后顺序不影响序列化字节）。
-                    baseBody = body;
                     // 仅接受普通对象：合法 JSON 但非对象（数字 / 字符串 / 布尔 / 数组）时
                     // 类型守卫拦下，使其回到「原样透传」路径。否则 bodyForLevel 内
                     // 对原始值赋属性会在严格模式抛 TypeError，而该处不在任何 try 内，
@@ -529,18 +524,14 @@ export function createProxyServer({
                 };
                 const globalLevel = effortOverride.level;
                 targets = targets.map((entry) => {
-                    // 三态：undefined 未命中 → 不覆写（baseBody，保留 CC 本地档位）；
-                    // null 命中但条目未指定档位 → 回退全局 level；档位值 → 该档位。
-                    // 未配置列表（effortTargets 为 null）→ 全量覆写全局 level。
+                    // 三态：undefined 未命中 / null 命中但未指定档位 → 回退全局
+                    // level（与 Suggestion Mode「未命中继承全局」一致）；档位值 →
+                    // 该档位。空列表（effortTargets 为 null）→ 全局 level。
+                    // 终态恒为某个档位，不再保留 CC 本地档位。
                     const resolved = effortTargets === null
                         ? globalLevel
                         : resolveBaseUrlTargetValue(entry.base, effortTargets);
-                    return {
-                        ...entry,
-                        body: resolved === undefined
-                            ? baseBody
-                            : bodyForLevel(resolved ?? globalLevel)
-                    };
+                    return { ...entry, body: bodyForLevel(resolved ?? globalLevel) };
                 });
             }
 
@@ -612,22 +603,17 @@ export function createProxyServer({
             forwardRequestWithRetry(req, body, targets, (upstreamRes) => {
                 const contentType = upstreamRes.headers['content-type'] || '';
                 const responseIsSse = contentType.includes('text/event-stream');
-                // 定向缩放：本请求最终命中上游的生效比例。scaleTargetEntries 为 null
-                // （未配置列表）时全量缩放；否则按三态：命中条目带 ratio →
-                // 该条目比例；命中条目未指定 → 回退全局 usageScaleRatio；
-                // 未命中 → null（1:1 透传，与关闭态同一路径）。全局
-                // usageScaleRatio 为 null（关闭 / 非法）时恒为 null 不透传。
+                // 定向缩放：本请求最终命中上游的生效比例。未命中条目 / 命中但
+                // 条目未指定 ratio / 未配置列表 → 全局 usageScaleRatio；命中且
+                // 带 ratio → 该条目比例。全局 usageScaleRatio 为 null
+                //（关闭 / 非法）时恒为 null 不透传。
                 let effectiveScaleRatio = null;
                 if (usageScaleRatio !== null) {
-                    if (scaleTargetEntries === null) {
-                        effectiveScaleRatio = usageScaleRatio;
-                    } else {
-                        const perEntryScaleValue =
-                            resolveBaseUrlTargetValue(activeUpstreamBase, scaleTargetEntries);
-                        effectiveScaleRatio = perEntryScaleValue === undefined
-                            ? null
-                            : (perEntryScaleValue === null ? usageScaleRatio : perEntryScaleValue);
-                    }
+                    const perEntryScaleValue = scaleTargetEntries === null
+                        ? null
+                        : resolveBaseUrlTargetValue(activeUpstreamBase, scaleTargetEntries);
+                    // ?? 同时覆盖 undefined（未命中）与 null（命中未指定）。
+                    effectiveScaleRatio = perEntryScaleValue ?? usageScaleRatio;
                 }
                 const logStream = dbg.requestStart(req, bodyBuffer);
                 // 熔断记败（onProbe）：触发了故障转移的状态码（429/5xx）视为
