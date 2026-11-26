@@ -1,0 +1,25 @@
+README.md
+  44a90045b65540da 8-9,101,103,107-109,115-118,122-123,130-133,135-136,138-143,167-183,186-200,276-285,315-318,337-339,353-354,394-403,425,428,433,435
+README.en.md
+  44a90045b65540da 9-11,110-111,113,118-121,128-134,137-138,145-150,152-153,156-161,192-239,288-296,303-305,361-367,374-376,446-448,469-472,513-517,580-589,611,614,619,621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "e2e64dab945b61fa72e3f0d14c4ae242eafb0d66",
+  "prompts": {
+    "44a90045b65540da": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3e1cd3f-b008-43f4-887f-18442906563c",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 223,
+      "total_deletions": 58,
+      "accepted_lines": 223,
+      "overriden_lines": 0
+    }
+  }
+}
