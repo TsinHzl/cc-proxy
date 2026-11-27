@@ -1,0 +1,25 @@
+openspec/config.yaml
+  afd1efd224a5e525 2-5,9-11,16-26,38-58
+openspec/project.md
+  afd1efd224a5e525 4-7,10-29,33-64,67-73,76-79,81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "0db9493a3adf34143732d8753fad6ad996372663",
+  "prompts": {
+    "afd1efd224a5e525": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "febf42ac-8f9e-42db-a122-c29d6622120a",
+        "model": "deepseek-v4.1-flash-1017"
+      },
+      "human_author": "TsinHzl <tsinhzl@icloud.com>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 107,
+      "overriden_lines": 0
+    }
+  }
+}
