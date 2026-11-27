@@ -22,6 +22,13 @@ git clone https://github.com/TsinHzl/cc-proxy.git cc-proxy && cd cc-proxy
 npm link          # 把 claude-proxy / cc-proxy 两个命令注册到全局 PATH
 ```
 
+仓库内另提供一键脚本（校验 Node ≥ 18 与 npm、执行 `npm link`，并在安装后验证命令可用）：
+
+```bash
+./install.sh      # 等价 npm link + 前置检查 + 安装验证
+./uninstall.sh    # 等价 npm unlink -g cc-proxy，保留 ~/.cc-proxy 数据
+```
+
 免 clone 直装（npm 拉取 GitHub master 全局安装，更新时重跑同一命令）：
 
 ```bash
@@ -63,13 +70,15 @@ cc-proxy -c                 # 参数原样透传给 claude（此处为 --continu
 cc-proxy -p "解释这段代码"    # 非交互模式同样可用
 ```
 
+`--version` / `-v` 与 `--setting` 均为短路命令：只打印版本或只启动设置页，不启动代理、不 spawn claude。
+
 命令行为：
 
 1. 在 127.0.0.1 起一个本地透明代理（随机可用端口）
 2. 注入 `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` 后 spawn `claude`（全部参数/stdio 透传）
-3. claude 退出后代理随之退出（退出码透传），并在 stderr 打印本次会话用量总结
-   （请求数 / 输入 / 输出 / 缓存读写 tokens / 缓存命中率）与延迟总结（TTFT 与总耗时
-   p50/p95、最慢 5 条），并同步落盘运行时快照（均需 `CC_PROXY_LOG=1` 查看）
+3. claude 退出后代理随之退出（退出码透传），同步 flush 运行时快照（上游状态 /
+   最近请求）；文本总结（请求数 / 输入 / 输出 / 缓存读写 tokens / 缓存命中率，
+   以及 TTFT 与总耗时 p50/p95、最慢 5 条）仅在 `CC_PROXY_LOG=1` 时打印到 stderr
 
 ### 指定上游
 
@@ -112,10 +121,11 @@ key）。全部上游失败时，客户端收到最后一个错误响应。`name
 > 到日志。启动横幅与切换事件通过 `CC_PROXY_LOG=1` 可见，默认静默。未配置
 > `upstreams` 时行为与现状完全一致。
 
-熔断保护（仅配置了 `upstreams` 时启用，单上游不创建熔断器）：某上游连续失败
-≥3 次后进入 `open`（选路跳过，设置页显示「熔断中」徽标及剩余冷却秒数），30s
-冷却后下一个请求作为 `half-open` 探测放行——成功则恢复、失败则重新熔断。全部
-上游均熔断时忽略熔断按原顺序尝试（熔断不是最终否决）。
+熔断保护：某上游连续失败 ≥3 次后进入 `open`（选路跳过，设置页显示「熔断中」
+徽标及剩余冷却秒数），30s 冷却后下一个请求作为 `half-open` 探测放行——成功则
+恢复、失败则重新熔断。全部上游均熔断时忽略熔断按原顺序尝试（熔断不是最终否决）。
+熔断状态始终记录并在「上游状态」面板展示；未配置 `upstreams` 时没有可切换对象，
+熔断不参与选路（单上游行为不变）。
 
 ### 渲染效果
 
@@ -133,7 +143,7 @@ key）。全部上游失败时，客户端收到最后一个错误响应。`name
 折叠。这样既保留了逐行流式的观感，又不给正文留下展开的静态文本。
 
 其他客户端（curl、各语言 SDK 等）流量原样透传，不做任何改写，也**不计入本地
-用量统计**。
+用量统计**；它们仍会出现在「上游状态」「最近请求」看板，但不参与会话延迟汇总。
 
 多轮对话中，历史消息里已渲染的思考文本会在转发前剥离，避免上下文膨胀；缺少
 有效 `signature` 的 thinking 块会被直接丢弃，避免第三方网关回传时触发上游签名
@@ -162,7 +172,7 @@ cc-proxy --setting
 - **上游状态**：各上游成功率、TTFT p50/p95、请求与失败次数、熔断徽标，以及最近 20 条故障转移事件。
 - **最近请求**：最近请求的元数据（时间 / 状态 / 上游 / 模型 / TTFT / 标记），点击行可展开脱敏后的头摘要。
 
-看板接口为 `GET /api/usage`、`GET /api/upstream-health`、`GET /api/recent-requests`；任一失败时静默降级为占位文案，绝不阻断设置功能。
+看板接口为 `GET /api/usage`、`GET /api/upstream-health`、`GET /api/recent-requests`；任一失败时静默降级为占位文案（「用量数据不可用」「上游状态不可用」「最近请求不可用」），绝不阻断设置功能。
 
 完整接口清单：
 
@@ -179,7 +189,7 @@ cc-proxy --setting
 | `GET` | `/api/recent-requests` | 最近请求快照 |
 
 > 设置页只能编辑 5 个开关与三条定向列表；`upstreams`、`alerts`、`usageAlert`、
-> `models` 需手改 `config.json`。
+> `models` 以及保留字段 `thinkingWindow` 需手改 `config.json`。
 
 五个开关会即时、原子地写入 `~/.cc-proxy/config.json`，并对下次启动的代理会话生效。新配置文件权限为 `0600`；更新已有配置时保留原权限。页面在初始化和保存期间禁用全部控件，保存成功后采用服务端返回的完整设置，失败时回滚到最近一次服务端权威状态。
 
@@ -278,8 +288,11 @@ http://127.0.0.1:<port>/
 1. **Host 校验**：`Host` 头必须精确等于 `127.0.0.1:<port>`，否则 403。
 2. **Origin 校验**：bootstrap 与 PATCH 要求 `Origin` 精确等于 `http://127.0.0.1:<port>`。
 3. **一次性 nonce**：30s TTL、单次消费、容量 256。
-4. **Token 校验**：`x-cc-proxy-token` 以 `timingSafeEqual` 常量时间比较。
-5. **响应头**：CSP `default-src 'none'` 且 `frame-ancestors 'none'`，`referrer-policy: no-referrer`。
+4. **Token 校验**：`x-cc-proxy-token` 以 `timingSafeEqual` 常量时间比较；除
+   `GET /` 与 `POST /api/bootstrap` 外，所有 `/api/*` 请求都必须携带该头。
+5. **响应头**：CSP `default-src 'none'; style-src 'unsafe-inline'; script-src
+   'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'`，并附
+   `referrer-policy: no-referrer`。
 
 正文上限 320KB、读取超时 5s，`/api/*` 的非白名单路径一律 404。
 
@@ -343,12 +356,12 @@ Claude Code 会在主对话之外发送以 `[SUGGESTION MODE` 开头的输入建
 cc-proxy --setting
 ```
 
-设置页展示用量看板（`GET /api/usage`）。接口固定返回**近 30 天**明细，页面提供**今日 / 七天 / 一个月**三个时间维度 Tab，切换只在前端切片重渲染、不重新请求。每个维度展示每日柱状图、区间汇总（总量 / 缓存命中率 / 估算费用）与按模型统计表。数据来自 `usage.json` 的 `byModel` 按模型分组累计（模型缺失时归入 `unknown`）。
+设置页展示用量看板（`GET /api/usage`）。接口固定返回**近 30 天**明细，页面提供**今日 / 七天 / 一个月**三个时间维度 Tab（默认「今日」，「一个月」即 30 天），切换只在前端切片重渲染、不重新请求。每个维度展示每日柱状图、区间汇总（总量 / 缓存命中率 / 估算费用）与按模型统计表。数据来自当前用量存储（SQLite 或 JSON 模式）的 `byModel` 按模型分组累计（模型缺失时归入 `unknown`）。
 
 - **导出**：看板顶部提供 `导出 CSV` / `导出 JSON` 两个按钮，走 `GET /api/usage/export?format=csv|json` 触发浏览器下载。CSV 列为 `date,requests,inputTokens,outputTokens,cacheReadTokens,cacheCreationTokens,cost`，与看板 `days` 数组同源同值；费用不可估时该列输出空串，字段含逗号 / 引号 / 换行时按 RFC 4180 转义。`format` 非法或缺失返回 400，非 GET 返回 405。
 - **存储模式**：看板标注代理当前落盘模式——Node 内置 `node:sqlite` 可用时写入 SQLite（WAL + `busy_timeout=5000`，`usage_daily` / `usage_by_model` / `usage_hourly` 三表），否则回退 JSON。首次启动会在转发任何请求前自动把既有 `usage.json` 导入 SQLite，成功后原文件重命名为 `usage.json.imported` 备份；导入失败则本次运行强制 JSON 模式，原文件保留。
 - **缓存命中率**：`cacheRead / (cacheRead + cacheCreation + input)`，无请求时分母为 0，显示为 `n/a`。
-- **费用估算**：内置 claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5 默认价表（USD / 每百万 token），日期后缀变体（如 `claude-sonnet-5-2026xxxx`）按最长前缀匹配命中；未收录模型不显示费用。
+- **费用估算**：内置 claude-opus-5 / claude-sonnet-5 / claude-haiku-4-5 默认价表（USD / 每百万 token），日期后缀变体（如 `claude-sonnet-5-2026xxxx`）按最长前缀匹配命中；未收录模型不显示费用。估算为保守口径：某日任一模型缺价即整日费用留空（区间汇总中任一日不可估则整区间留空），避免部分求和低估。
 - **价表覆盖**：在 `~/.cc-proxy/config.json` 中配置 `models.<model>.pricing = { input, output, cacheRead, cacheCreation }` 即可覆盖内置价表（支持前缀键），精确键优先于前缀匹配。
 - **当日用量告警（分级）**：配置 `alerts.dailyTokens`（正整数）或 `alerts.dailyCost`（费用预算，美元，> 0 有效）后触发。比值 = `max(今日 tokens / dailyTokens, 今日费用 / dailyCost)`，默认 `usageAlert.warnThreshold = 0.8`（预警）/ `limitThreshold = 1.0`（超限）。预警时看板显示黄点「今日用量预警 · 已用 N%」，超限时红点「今日用量已超限 · 已用 N%」；未配置（0）时不告警。
 - **CLI 启动告警**：代理启动时若 `alerts.dailyTokens > 0` 且**当日累计 tokens 已超过该原始阈值**，在启动横幅前打印一条 WARNING（需 `CC_PROXY_LOG=1` 可见）。此检查不读取 `dailyCost` 与 `usageAlert` 分级阈值，与看板红点相互独立。
@@ -369,11 +382,11 @@ cc-proxy --setting
 
 熔断状态以徽标呈现：`open` 显示「熔断中（剩余 Ns）」，`half-open` 显示「半开探测」，`closed` 不显示（字段缺失或非法按 `closed` 容错）。
 
-统计为**被动埋点**：只记录代理真实转发过的请求，绝不向上游发送探活请求；TTFT 样本仅保留最近 500 条，快照防抖 500ms 合并落盘到 `~/.cc-proxy/runtime/upstream-health.json`（写失败静默，不阻塞转发）。数据不可用时面板显示「上游状态不可用」。
+统计为**被动埋点**：只记录代理真实转发过的请求（含非 CC 客户端），绝不向上游发送探活请求；上游标识取配置的 `name`，缺省用 host。TTFT 样本仅保留最近 500 条，快照防抖 500ms 合并落盘到 `~/.cc-proxy/runtime/upstream-health.json`（写失败静默，不阻塞转发）。数据不可用时面板显示「上游状态不可用」。
 
 ### 最近请求
 
-设置页「最近请求」面板展示最近 200 条请求的元数据（`GET /api/recent-requests`，页面倒序展示最新 50 条）：时间、状态码、命中上游、模型、TTFT，以及标记列——`💭` 表示该请求的思考内容被改写为文本，`⇄` 表示经过故障转移。点击任一行可展开详情，显示脱敏后的请求头与响应头摘要。
+设置页「最近请求」面板展示最近 200 条请求的元数据（`GET /api/recent-requests`，页面倒序展示最新 50 条）：时间、状态码、命中上游（`name` 缺省为 host）、模型、TTFT，以及标记列——`💭` 表示该请求的思考内容被改写为文本，`⇄` 表示经过故障转移。点击任一行可展开详情，显示脱敏后的请求头与响应头摘要。面板覆盖所有实际转发的请求（含非 CC 客户端）；被拦截的 Suggestion Mode 请求不转发，因此不会出现在面板中。
 
 面板**不含请求体与响应体**。头摘要在写入时脱敏：`authorization` / `x-api-key` / `anthropic-api-key` / `cookie` / `proxy-authorization` / `set-cookie` 的值超过 4 位时只保留末 4 位（`***xxxx`），4 位及以下（含空值）整体替换为 `***`；响应头只记录 `content-type` / `request-id` / `anthropic-version`，其余头不落盘。快照防抖 500ms 落盘到 `~/.cc-proxy/runtime/recent-requests.json`（tmp + rename 原子替换、mode 0600）。
 
@@ -388,8 +401,23 @@ CC_PROXY_DEBUG=1 cc-proxy
 设置 `CC_PROXY_DEBUG=1` 后，每个请求的 method/url/status/耗时、请求体与 SSE 事件流逐条落盘到 `~/.cc-proxy/logs/`（每请求一个 `.log` 文件），用于排查第三方网关兼容性：
 
 - header 只记录名称，值（authorization、api key 等）不落盘
+- 请求体最多落盘前 512KB，超出部分截断；文件名格式 `<时间戳>-<序号>-<method><path>.log`
 - 写失败静默丢弃，绝不影响代理流量
 - 未设置时零开销、零文件
+
+### 数据目录与运行时文件
+
+全部状态位于 `~/.cc-proxy/`：
+
+| 路径 | 内容 | 说明 |
+|---|---|---|
+| `config.json` | 持久化配置 | 缺失/损坏回退默认值；写入为同目录 tmp + rename 原子替换并保留原权限（新建 0600） |
+| `usage.db` / `usage.json` | 用量统计 | `node:sqlite` 可用时为 `.db`，否则为 `.json` |
+| `usage.json.imported` | 历史导入备份 | 首次导入 SQLite 成功后原文件改名备份，仅导入场景存在 |
+| `captured-system-prompt.json` | 捕获的 CC 默认系统提示词 | 始终记录覆写前的原始值；删除后由后续代理会话重新捕获（同一会话内不回溯重建） |
+| `runtime/upstream-health.json` | 上游健康 / 熔断 / 切换事件快照 | 可整目录删除，代理会重建 |
+| `runtime/recent-requests.json` | 最近请求快照 | 同上 |
+| `logs/` | `CC_PROXY_DEBUG=1` 的请求级日志 | 可随时删除 |
 
 ## 环境变量
 
@@ -404,8 +432,13 @@ CC_PROXY_DEBUG=1 cc-proxy
 ## 开发
 
 ```bash
-npm test        # node:test 单元 + 端到端测试（全量）
+npm test                                            # 全量测试（node:test）
+node --test "test/thinking-text.test.mjs"           # 运行单个测试文件
+node --test --test-name-pattern="历史剥离" test/thinking-text.test.mjs  # 按名称过滤
 ```
+
+> 已知环境问题：Node 25.x 下 `npm test` 可能以 `--test-concurrency=0` 挂起；
+> 此时改用 `node --test --test-timeout=15000 "test/"*.test.mjs`。
 
 ## 目录结构
 
@@ -420,6 +453,7 @@ npm test        # node:test 单元 + 端到端测试（全量）
 | `bin/settings-page-recent-requests.js` | 最近请求表脚本片段（含脱敏头详情展开） |
 | `bin/settings-session.js` | 设置页 SSE 租约、定时器、socket 跟踪与关闭流程 |
 | `bin/settings-cli.js` | 旧终端设置菜单实现（当前 CLI 不再调用） |
+| `install.sh` / `uninstall.sh` | 一键安装 / 卸载脚本（`npm link` / `npm unlink -g`，保留 `~/.cc-proxy` 数据） |
 | `src/thinking-text.js` | 渲染核心：格式化、流式改写、历史剥离、UA 门控 |
 | `src/proxy.js` | HTTP 代理与响应改写（SSE / 非流式 JSON）、Suggestion Mode 拦截、usage/debug 挂接 |
 | `src/upstream.js` | 上游地址解析、重试与故障转移转发（含 `FAILOVER_STATUS` 导出） |
@@ -438,3 +472,5 @@ npm test        # node:test 单元 + 端到端测试（全量）
 | `src/debug-log.js` | 请求级 debug 日志（`CC_PROXY_DEBUG=1`） |
 | `src/logger.js` | 代理内部静默日志（`CC_PROXY_LOG=1` 恢复 stderr 输出） |
 | `test/*.test.mjs` | 单元与端到端测试（node:test） |
+| `docs/` | 截图与博客等文档 |
+| `openspec/` | 规范驱动开发：`project.md`、已归档需求（`specs/`）与提案（`changes/`） |

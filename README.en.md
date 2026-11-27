@@ -24,6 +24,14 @@ git clone https://github.com/TsinHzl/cc-proxy.git cc-proxy && cd cc-proxy
 npm link          # registers the claude-proxy / cc-proxy commands on your global PATH
 ```
 
+The repo also ships one-click scripts (they check Node >= 18 and npm, run `npm link`,
+and verify the commands afterward):
+
+```bash
+./install.sh      # npm link + prerequisite checks + verification
+./uninstall.sh    # npm unlink -g cc-proxy; keeps ~/.cc-proxy data
+```
+
 Clone-free direct install (npm fetches master from GitHub globally; re-run the
 same command to update):
 
@@ -68,14 +76,17 @@ cc-proxy -c                 # arguments pass through to claude (--continue here)
 cc-proxy -p "explain this"  # non-interactive mode works too
 ```
 
+`--version` / `-v` and `--setting` are short-circuit commands: they only print the
+version or start the settings page — no proxy, no claude spawn.
+
 What the command does:
 
 1. Starts a local transparent proxy on 127.0.0.1 (random free port)
 2. Spawns `claude` with `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` injected (all args/stdio passed through)
-3. Shuts the proxy down when claude exits (exit code passed through) and prints a
-   per-session usage summary (requests / input / output / cache tokens / cache-hit
-   rate) plus a latency summary (TTFT and total p50/p95, 5 slowest requests) to
-   stderr, and flushes the runtime snapshots (all require `CC_PROXY_LOG=1`)
+3. Shuts the proxy down when claude exits (exit code passed through) and flushes the
+   runtime snapshots (upstream health / recent requests); the text summaries
+   (requests / input / output / cache tokens / cache-hit rate, plus TTFT and total
+   p50/p95 with the 5 slowest requests) are printed to stderr only with `CC_PROXY_LOG=1`
 
 ### Choosing an upstream
 
@@ -125,12 +136,14 @@ samples keep their configured order so noise cannot steer routing.
 > with `CC_PROXY_LOG=1`, silent by default. Without `upstreams` configured,
 > behavior is identical to before.
 
-Circuit breaker (enabled only when `upstreams` is configured; a single upstream gets
-no breaker): an upstream that fails 3 times in a row becomes `open` (skipped during
+Circuit breaker: an upstream that fails 3 times in a row becomes `open` (skipped during
 routing; the settings page shows a "circuit open" badge with the remaining cooldown).
 After a 30s cooldown the next request is let through as a `half-open` probe — success
 closes the circuit, failure re-opens it. If every upstream is open the proxy ignores
-the breaker and tries them in order (the breaker is not a final veto).
+the breaker and tries them in order (the breaker is not a final veto). Breaker state is
+always tracked and shown in the upstream status panel; without `upstreams` there is
+nothing to fail over to, so it does not affect routing (single-upstream behavior is
+unchanged).
 
 ### Rendering
 
@@ -150,7 +163,8 @@ same index** (carrying the upstream signature), which Claude Code renders as a c
 an expanded static text block in the transcript.
 
 Other clients (curl, language SDKs, etc.) pass through untouched and are **not counted
-in local usage stats**.
+in local usage stats**; they still appear in the upstream status and recent-request
+panels, but are excluded from the session latency summary.
 
 In multi-turn conversations, already-rendered thinking text in the message history is
 stripped before forwarding, so the context does not keep growing; thinking blocks without
@@ -187,7 +201,7 @@ Read-only dashboards (fetched independently, never part of the saved settings):
 
 The dashboard endpoints are `GET /api/usage`, `GET /api/upstream-health` and
 `GET /api/recent-requests`; when one fails, its panel degrades silently to a placeholder
-and never blocks the settings page.
+(`用量数据不可用` / `上游状态不可用` / `最近请求不可用`) and never blocks the settings page.
 
 Full endpoint list:
 
@@ -204,11 +218,27 @@ Full endpoint list:
 | `GET` | `/api/recent-requests` | Recent requests snapshot |
 
 > The settings page edits only the 5 switches and three target lists; `upstreams`,
-> `alerts`, `usageAlert` and `models` must be edited by hand in `config.json`.
+> `alerts`, `usageAlert`, `models` and the retained `thinkingWindow` field must be
+> edited by hand in `config.json`.
 
-The settings service binds `127.0.0.1` only, and exits 2 seconds after the last settings
-page closes. A missing or corrupted config file falls back to defaults without affecting
-startup.
+The terminal and browser only show the credential-free base URL:
+
+```text
+http://127.0.0.1:<port>/
+```
+
+Each page load receives a 30-second, single-use bootstrap nonce; the page exchanges it
+for a temporary API token in a same-origin request, so the token never enters the URL,
+terminal output or the Referer header. At most 256 unconsumed nonces are kept, evicting
+the oldest.
+
+The settings service binds `127.0.0.1` only and exits 2 seconds after the last settings
+page closes; refreshing within that grace period and re-establishing a lease cancels the
+exit. If no browser connects within 30 seconds the service also exits. If connections
+linger more than 1 second during shutdown, the remaining sockets are destroyed and the
+port released. If the browser does not open automatically, visit the local URL printed
+in the terminal. A missing or corrupted config file falls back to defaults without
+affecting startup.
 
 Switches are written atomically to `~/.cc-proxy/config.json` and take effect on the next
 proxy session; new files get mode `0600` and existing files keep their mode. Config keys
@@ -232,8 +262,11 @@ Security chain:
 1. **Host check** — the `Host` header must equal `127.0.0.1:<port>` exactly, otherwise 403.
 2. **Origin check** — bootstrap and PATCH require `Origin` to equal `http://127.0.0.1:<port>`.
 3. **One-time nonce** — 30s TTL, single use, capacity 256.
-4. **Token check** — `x-cc-proxy-token` compared in constant time via `timingSafeEqual`.
-5. **Response headers** — CSP `default-src 'none'` with `frame-ancestors 'none'`, and `referrer-policy: no-referrer`.
+4. **Token check** — `x-cc-proxy-token` compared in constant time via `timingSafeEqual`;
+   apart from `GET /` and `POST /api/bootstrap`, every `/api/*` request must carry it.
+5. **Response headers** — CSP `default-src 'none'; style-src 'unsafe-inline'; script-src
+   'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'`, plus
+   `referrer-policy: no-referrer`.
 
 Bodies are capped at 320KB with a 5s read timeout; any `/api/*` path outside the
 allowlist returns 404.
@@ -477,11 +510,12 @@ cc-proxy --setting
 ```
 
 The settings page shows a usage dashboard (`GET /api/usage`). The endpoint always
-returns the **last 30 days**; the page offers **今日 / 七天 / 一个月** tabs that slice
-that payload client-side without refetching. Each range renders a daily bar chart, a
-range summary (total tokens / cache-hit rate / estimated cost) and a per-model table.
-Data comes from the per-model `byModel` totals in `usage.json` (requests without a
-model are grouped under `unknown`).
+returns the **last 30 days**; the page offers **今日 / 七天 / 一个月** tabs (default
+`今日`; `一个月` means 30 days) that slice that payload client-side without refetching.
+Each range renders a daily bar chart, a range summary (total tokens / cache-hit rate /
+estimated cost) and a per-model table. Data comes from the per-model `byModel` totals of
+the active usage store (SQLite or JSON mode); requests without a model are grouped under
+`unknown`.
 
 - **Export**: two buttons at the top of the board (`导出 CSV` / `导出 JSON`) download
   via `GET /api/usage/export?format=csv|json`. The CSV columns are
@@ -500,7 +534,9 @@ model are grouped under `unknown`).
 - **Cost estimation**: built-in default pricing for claude-opus-5 /
   claude-sonnet-5 / claude-haiku-4-5 (USD per million tokens); date-suffixed
   variants (e.g. `claude-sonnet-5-2026xxxx`) match via longest-prefix. Models
-  without pricing show no cost.
+  without pricing show no cost. The estimate is conservative: if any model of a day
+  lacks pricing the whole day's cost is blank (and a range containing such a day is
+  blank too), so partial sums cannot understate spend.
 - **Pricing override**: set `models.<model>.pricing =
   { input, output, cacheRead, cacheCreation }` in `~/.cc-proxy/config.json` to
   override the built-in table (prefix keys supported; exact keys win over
@@ -538,8 +574,9 @@ Breaker state renders as a badge: `open` shows `熔断中（剩余 Ns）`, `half
 `closed`).
 
 The stats are **passive telemetry**: only requests the proxy actually forwarded are
-recorded, and no probe request is ever sent upstream. TTFT keeps the 500 most recent
-samples; the snapshot is debounce-flushed (500 ms) to
+recorded (including non-CC clients), and no probe request is ever sent upstream. An
+upstream's id is its configured `name`, falling back to the host. TTFT keeps the 500 most
+recent samples; the snapshot is debounce-flushed (500 ms) to
 `~/.cc-proxy/runtime/upstream-health.json` (write failures are silent and never block
 forwarding). When the data is unavailable the panel reads `上游状态不可用`.
 
@@ -547,9 +584,12 @@ forwarding). When the data is unavailable the panel reads `上游状态不可用
 
 The `最近请求` panel lists metadata for the 200 most recent requests
 (`GET /api/recent-requests`; the page shows the newest 50 in reverse order): time,
-status, upstream, model, TTFT, and a flags column — `💭` means the request's thinking
-content was rewritten to text, `⇄` means it went through a failover. Clicking a row
-expands a detail line with the redacted request and response header summaries.
+status, upstream (its `name`, or the host when unnamed), model, TTFT, and a flags
+column — `💭` means the request's thinking content was rewritten to text, `⇄` means it
+went through a failover. Clicking a row expands a detail line with the redacted request
+and response header summaries. The panel covers every forwarded request (including
+non-CC clients); intercepted Suggestion Mode requests are never forwarded, so they do
+not appear.
 
 The panel never contains request or response bodies. Headers are redacted at write
 time: values of `authorization` / `x-api-key` / `anthropic-api-key` / `cookie` /
@@ -574,8 +614,24 @@ file per request) — useful for troubleshooting third-party gateway
 compatibility:
 
 - Headers record names only; values (authorization, API keys, etc.) are never written
+- Request bodies are truncated at the first 512KB; file names follow
+  `<timestamp>-<seq>-<method><path>.log`
 - Write failures are silently dropped and never affect proxy traffic
 - When unset: zero overhead, zero files
+
+### Data directory and runtime files
+
+All state lives under `~/.cc-proxy/`:
+
+| Path | Contents | Notes |
+|---|---|---|
+| `config.json` | Persistent settings | Missing/corrupt falls back to defaults; writes are tmp + rename atomic and keep the existing mode (0600 for new files) |
+| `usage.db` / `usage.json` | Usage stats | `.db` when `node:sqlite` is available, otherwise `.json` |
+| `usage.json.imported` | History import backup | The original file renamed after a successful one-time SQLite import; present only after an import |
+| `captured-system-prompt.json` | Captured CC default system prompt | Always the pre-override original; deleted files are re-captured by later proxy sessions (not rebuilt within the running one) |
+| `runtime/upstream-health.json` | Health / breaker / failover snapshot | Safe to delete the whole `runtime/` directory; the proxy rebuilds it |
+| `runtime/recent-requests.json` | Recent request snapshot | Same as above |
+| `logs/` | Per-request logs from `CC_PROXY_DEBUG=1` | Safe to delete |
 
 ## Environment variables
 
@@ -590,8 +646,14 @@ compatibility:
 ## Development
 
 ```bash
-npm test        # node:test unit + end-to-end tests (full suite)
+npm test                                            # full suite (node:test)
+node --test "test/thinking-text.test.mjs"           # run a single test file
+node --test --test-name-pattern="历史剥离" test/thinking-text.test.mjs  # filter by name
 ```
+
+> Known environment issue: on Node 25.x `npm test` can hang with
+> `--test-concurrency=0`; use
+> `node --test --test-timeout=15000 "test/"*.test.mjs` instead.
 
 ## Layout
 
@@ -606,6 +668,7 @@ npm test        # node:test unit + end-to-end tests (full suite)
 | `bin/settings-page-recent-requests.js` | Recent requests table script fragment (with redacted-header detail expansion) |
 | `bin/settings-session.js` | Settings page SSE lease, timers, socket tracking and shutdown flow |
 | `bin/settings-cli.js` | Legacy terminal settings menu (no longer invoked by the CLI) |
+| `install.sh` / `uninstall.sh` | One-click install / uninstall scripts (`npm link` / `npm unlink -g`; keeps `~/.cc-proxy` data) |
 | `src/thinking-text.js` | Rendering core: formatting, streaming rewrite, history strip, UA gate |
 | `src/proxy.js` | HTTP proxy and response rewriting (SSE / non-streaming JSON), Suggestion Mode intercept, usage/debug hooks |
 | `src/upstream.js` | Upstream URL resolution, retries and failover forwarding (exports `FAILOVER_STATUS`) |
@@ -624,3 +687,5 @@ npm test        # node:test unit + end-to-end tests (full suite)
 | `src/debug-log.js` | Per-request debug log (`CC_PROXY_DEBUG=1`) |
 | `src/logger.js` | Proxy-internal silent logging (`CC_PROXY_LOG=1` restores stderr output) |
 | `test/*.test.mjs` | Unit and end-to-end tests (node:test) |
+| `docs/` | Screenshots and blog posts |
+| `openspec/` | Spec-driven development: `project.md`, archived specs (`specs/`) and proposals (`changes/`) |
