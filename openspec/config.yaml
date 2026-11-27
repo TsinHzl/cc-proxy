@@ -1,13 +1,29 @@
 # openspec/config.yaml
+# 由 /opsx:init 自动生成。可手动编辑以调整约束注入内容。
+# context 和 rules 在所有 OpenSpec artifact 生成步骤中作为约束条件注入，
+# 不是模板内容，不得直接复制到 artifact 输出文件中。
+
 schema: spec-driven
 
 context: |
-  Tech stack: Node.js >= 18 (ESM), zero runtime deps (node:http / node:https / child_process)
+  Tech stack: Node.js >= 18 (ESM), zero runtime deps (node:http / node:https /
+  child_process / fs / path / os / crypto / readline; optional node:sqlite probe)
+  Package manager: npm（全局 bin claude-proxy / cc-proxy 走 npm link；无 build、无 lint）
   Architecture: local transparent proxy for Claude Code. Anthropic Messages API in,
   forwarded to upstream (ANTHROPIC_BASE_URL or https://api.anthropic.com). SSE responses
   pass through an event-level thinking→text transformer (ported from agy-cc-proxy).
   CLI bin `claude-proxy`/`cc-proxy` starts the proxy then spawns `claude` with injected env.
-  Test framework: node:test (`npm test`)
+  Request-side rewrites（仅 CC UA）：thinking 历史剥离 / effort 覆写 / system prompt 捕获与覆写 /
+  Suggestion Mode 拦截；response-side：thinking→text、usage 提取、usage 展示缩放。
+  Multi-upstream failover（upstream.js + upstream-health.js + upstream-breaker.js）：
+  primary + config.upstreams；同上游仅 502/503/529 重试（1s/2s/4s），429/500 立即切换；
+  健康样本 ≥3 才按成功率降序 / TTFT p50 升序重排；全部熔断时按配置序兜底（熔断非最终否决）。
+  Settings: ~/.cc-proxy/config.json 启动读取一次（切换需下次会话生效）；`cc-proxy --setting`
+  本地 Web 页，127.0.0.1 + Host → Origin → 一次性 nonce → token。
+  Source layout: bin/ = CLI 入口与设置页；src/ = 代理管道模块（一文件一职责）；
+  test/ = 与 src 一一对应的 node:test 套件。
+  Test framework: node:test（`npm test`）；无 mock 框架，通过工厂参数注入假依赖 + 真实 http server
+  Target platform: server（macOS / Linux / Windows，Node ≥ 18）
   Critical invariants:
     - thinking→text rendering format MUST stay byte-compatible with agy-cc-proxy
       `src/cloudcode/thinking-text-streamer.js` (header line + `\n> ...` dim lines,
@@ -19,3 +35,24 @@ context: |
     - Proxy-internal logging MUST be silent by default (src/logger.js); any
       stdout/stderr output leaks into Claude Code's Ink UI via stdio inheritance.
       CC_PROXY_LOG=1 restores stderr for debugging
+    - ~/.cc-proxy 写盘统一同目录临时文件 + rename 原子替换，新建 mode 0600，
+      更新保留原 mode
+
+rules:
+  specs:
+    - 需求一律用「The system SHALL …」句式，并同时写明**不做**的边界（哪些流量/字段原样透传）
+    - usage 类需求须区分「客户端可见值」与「内部统计真实值」，说明缩放只作用于哪一侧
+    - 定向特性（baseUrls）须复用 base-url-match 语义：空列表 = 全局生效、多条命中取路径最具体（更长）、规范串去重保留首项、未命中回退全局值
+    - 明确生效时机（启动时读取一次 vs 即时落盘），涉及重启生效的须在 Purpose 中点名
+    - 容错要求写成显式回退：配置缺失/损坏/字段非法 → 回退默认值且不抛异常
+  tasks:
+    - 每个任务给出可验证的命令与预期结果（`node --test test/<file>.test.mjs` + 断言要点）
+    - 触及响应管道的任务必须包含「非 CC UA / 非 SSE / 错误响应原样透传」的回归断言
+    - 任务清单首行标注 `## 状态：`（IN_PROGRESS / DONE），完成后同步 README 中英双版
+    - 交付前跑全量 `npm test`；Node 25.x 挂起时改用 `node --test --test-timeout=15000 "test/"*.test.mjs`
+  design:
+    - 零运行时依赖优先：新增能力先看 Node 内置模块（可选能力用动态 import 探测 + 降级，如 node:sqlite）
+    - 热路径（每请求执行）的任何失败必须静默降级，绝不中断或阻塞代理流量
+    - 关闭态零开销短路：未启用特性不得引入额外解析或 IO
+    - 配置在代理启动时读取一次并归一化，非法值回退默认；不引入热加载
+    - 不生成 ANSI 控制码；不新增终端 UI / TUI（Ink 渲染器雷区）
